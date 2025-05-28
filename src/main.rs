@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::{cmp, collections::HashMap, time::Instant};
 
 use bevy::{
     asset::RenderAssetUsages,
     input::mouse::MouseMotion,
     prelude::*,
     render::mesh::{Indices, PrimitiveTopology},
+    tasks::{AsyncComputeTaskPool, Task, futures_lite},
     window::{CursorGrabMode, PrimaryWindow},
 };
 
@@ -50,7 +51,7 @@ struct ChunkPos
     y: i32,
 }
 
-// The Chunk component
+// The Chunk component.
 #[derive(Component)]
 struct Chunk
 {
@@ -90,6 +91,13 @@ struct Map
 #[derive(Resource, Default)]
 struct ChunkMap(HashMap<ChunkPos, Entity>);
 
+// Tracks the loading state of chunks.
+#[derive(Resource, Default)]
+struct ChunkLoadState
+{
+    tasks: HashMap<ChunkPos, Task<(ChunkPos, Chunk)>>,
+}
+
 // This system is called when the game launches. The data is hard-coded but
 // should be read from a file eventually.
 fn load_block_types(mut list: ResMut<BlockList>)
@@ -127,14 +135,44 @@ fn load_raw_chunk(_seed: u64, pos: ChunkPos) -> Chunk
                     + z * (CHUNK_SIZE as usize)
                     + x;
 
-                // The block type is determined by the height only (flat world).
-                blocks[idx] = match y
+                // The terrain will be generated with pyramidal hills to test mesh generation
+                // and lighting.
+
+                let distance_left = x;
+                let distance_right = CHUNK_SIZE as usize - 1 - x;
+                let distance_top = z;
+                let distance_bottom = CHUNK_SIZE as usize - 1 - z;
+
+                let terrain_height = cmp::min(
+                    cmp::min(distance_left, distance_right),
+                    cmp::min(distance_top, distance_bottom),
+                ) + 60_usize;
+
+                blocks[idx] = if y <= terrain_height
                 {
-                    0 ..= 60 => BlockType::Stone,
-                    61 ..= 62 => BlockType::Dirt,
-                    63 => BlockType::Grass,
-                    _ => BlockType::Air,
+                    BlockType::Stone
+                }
+                else if y <= terrain_height + 2
+                {
+                    BlockType::Dirt
+                }
+                else if y <= terrain_height + 3
+                {
+                    BlockType::Grass
+                }
+                else
+                {
+                    BlockType::Air
                 };
+
+                // The block type is determined by the height only (flat world).
+                // blocks[idx] = match y
+                // {
+                //     0 ..= 60 => BlockType::Stone,
+                //     61 ..= 62 => BlockType::Dirt,
+                //     63 => BlockType::Grass,
+                //     _ => BlockType::Air,
+                // };
             }
         }
     }
@@ -149,30 +187,23 @@ fn manage_chunk_loading(
     mut commands: Commands,
     map: Res<Map>,
     mut chunk_map: ResMut<ChunkMap>,
+    mut chunk_state: ResMut<ChunkLoadState>,
     camera: Query<&Transform, With<FlyCam>>,
 )
 {
-    // First we must find the chunk the player is in.
-    let player_chunk: ChunkPos;
-
-    // Get the camera component of the player.
-    let cam_tf = camera.single();
-
-    match cam_tf
+    // Get player chunk position
+    let player_chunk = match camera.single()
     {
         Ok(cam) =>
         {
-            // Get the translation of the camera.
             let cam_pos = cam.translation;
-
-            // Create a ChunkPos using the translation data.
             let chunk_x = (cam_pos.x / CHUNK_SIZE as f32).floor() as i32;
             let chunk_y = (cam_pos.z / CHUNK_SIZE as f32).floor() as i32;
-            player_chunk = ChunkPos { x: chunk_x, y: chunk_y };
+            ChunkPos { x: chunk_x, y: chunk_y }
         },
         // If there was a problem retrieving the camera data, we use a default position.
-        Err(_) => player_chunk = ChunkPos { x: 0, y: 0 },
-    }
+        Err(_) => ChunkPos { x: 0, y: 0 },
+    };
 
     // The player's chunk's position will be used to determine the chunks that
     // should be loaded right now. This is where the render distance is useful.
@@ -194,37 +225,72 @@ fn manage_chunk_loading(
             {
                 commands.entity(e).despawn();
             }
+            chunk_state.tasks.remove(&old_pos);
         }
     }
 
     // Chunks that are currently unloaded but are wanted will be loaded.
     for pos in desired
     {
-        if chunk_map.0.contains_key(&pos)
+        if chunk_map.0.contains_key(&pos) || chunk_state.tasks.contains_key(&pos)
         {
-            // Chunk is already loaded.
+            // Already loaded or being loaded.
             continue;
         }
 
-        let raw = load_raw_chunk(map.seed, pos);
-
-        let e = commands
-            .spawn((
-                Transform::from_translation(Vec3::new(
-                    pos.x as f32 * CHUNK_SIZE as f32,
-                    0.0,
-                    pos.y as f32 * CHUNK_SIZE as f32,
-                )),
-                Visibility::default(),
-                raw,
-            ))
-            .id();
-
-        chunk_map.0.insert(pos, e);
+        // Spawn async task to generate the chunk.
+        let seed = map.seed;
+        let task_pool = AsyncComputeTaskPool::get();
+        let task = task_pool.spawn(async move {
+            let chunk = load_raw_chunk(seed, pos);
+            (pos, chunk)
+        });
+        chunk_state.tasks.insert(pos, task);
     }
 }
 
-// The faces of each block
+// This system processes completed chunk loading tasks.
+fn process_chunk_tasks(
+    mut commands: Commands,
+    mut chunk_map: ResMut<ChunkMap>,
+    mut chunk_state: ResMut<ChunkLoadState>,
+)
+{
+    use futures_lite::future;
+
+    let mut completed = Vec::new();
+
+    // Check for completed tasks.
+    for (task_pos, task) in chunk_state.tasks.iter_mut()
+    {
+        if let Some((chunk_pos, chunk)) = future::block_on(future::poll_once(task))
+        {
+            // Spawn the chunk entity.
+            let e = commands
+                .spawn((
+                    Transform::from_translation(Vec3::new(
+                        chunk_pos.x as f32 * CHUNK_SIZE as f32,
+                        0.0,
+                        chunk_pos.y as f32 * CHUNK_SIZE as f32,
+                    )),
+                    Visibility::default(),
+                    chunk,
+                ))
+                .id();
+
+            chunk_map.0.insert(chunk_pos, e);
+            completed.push(*task_pos);
+        }
+    }
+
+    // Remove completed tasks.
+    for pos in completed
+    {
+        chunk_state.tasks.remove(&pos);
+    }
+}
+
+// The faces of each block.
 const FACES: &[(IVec3, [[f32; 3]; 4])] = &[
     // +X
     (IVec3::new(1, 0, 0), [[1., 0., 0.], [1., 1., 0.], [1., 1., 1.], [1., 0., 1.]]),
@@ -377,9 +443,10 @@ fn main()
     app.init_resource::<BlockList>();
     app.init_resource::<Map>();
     app.init_resource::<ChunkMap>();
+    app.init_resource::<ChunkLoadState>();
 
     app.add_systems(Startup, load_block_types);
-    app.add_systems(Update, (manage_chunk_loading, draw_new_chunks).chain());
+    app.add_systems(Update, (manage_chunk_loading, process_chunk_tasks, draw_new_chunks).chain());
     app.add_systems(Update, fly_camera_movement);
     app.add_systems(Update, mouse_look);
 
