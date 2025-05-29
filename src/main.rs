@@ -1,4 +1,4 @@
-use std::{cmp, collections::HashMap, time::Instant};
+use std::{cmp, collections::HashMap};
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -19,7 +19,7 @@ const RENDER_DISTANCE: i32 = 16;
 
 // Block types are hard-coded but should be loaded from a file later.
 #[repr(u16)]
-#[derive(PartialEq, Eq, Hash, Copy, Clone)]
+#[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 enum BlockType
 {
     Air,
@@ -191,7 +191,7 @@ fn manage_chunk_loading(
     camera: Query<&Transform, With<FlyCam>>,
 )
 {
-    // Get player chunk position
+    // Get player chunk position.
     let player_chunk = match camera.single()
     {
         Ok(cam) =>
@@ -407,6 +407,17 @@ fn mesh_chunk(chunk: &Chunk, block_list: &BlockList) -> Mesh
     return mesh;
 }
 
+/// A handle to the neutral white material we want to reuse every time.
+#[derive(Resource)]
+struct BaseMaterial(pub Handle<StandardMaterial>);
+
+/// Create the material once at startup.
+fn setup_base_material(mut commands: Commands, mut materials: ResMut<Assets<StandardMaterial>>)
+{
+    let handle = materials.add(StandardMaterial { base_color: Color::WHITE, ..default() });
+    commands.insert_resource(BaseMaterial(handle));
+}
+
 // Meshes that were already drawn should not be drawn again.
 // This system will iterate over each newly appeared chunk and draw its mesh.
 fn draw_new_chunks(
@@ -449,6 +460,8 @@ fn main()
     app.add_systems(Update, (manage_chunk_loading, process_chunk_tasks, draw_new_chunks).chain());
     app.add_systems(Update, fly_camera_movement);
     app.add_systems(Update, mouse_look);
+    app.add_systems(Update, (block_interaction, remesh_changed_chunks).chain());
+    app.add_systems(Startup, setup_base_material);
 
     app.add_systems(Startup, setup);
 
@@ -464,7 +477,7 @@ fn setup(mut commands: Commands, mut windows: Query<&mut Window, With<PrimaryWin
     // Ambient light.
     commands.insert_resource(AmbientLight {
         color: Color::WHITE,
-        brightness: 0.5, // increase from default 0.0
+        brightness: 0.5,
         affects_lightmapped_meshes: true,
     });
 
@@ -595,5 +608,168 @@ fn mouse_look(mut motion: EventReader<MouseMotion>, mut query: Query<(&mut FlyCa
             // Update the actual transform.rotation.
             transform.rotation = Quat::from_euler(EulerRot::YXZ, flycam.yaw, flycam.pitch, 0.0);
         }
+    }
+}
+
+// This system handles block interaction with the mouse.
+// If a block is placed or destroyed, the chunk is marked as changed and will be
+// remeshed.
+fn block_interaction(
+    buttons: Res<ButtonInput<MouseButton>>,
+    cams: Query<&GlobalTransform, With<Camera3d>>,
+    chunk_map: Res<ChunkMap>,
+    mut chunks: Query<&mut Chunk>,
+)
+{
+    let request_destroy: bool = buttons.just_pressed(MouseButton::Left);
+    let request_place: bool = buttons.just_pressed(MouseButton::Right);
+
+    // If neither left nor right mouse button is pressed, we do nothing.
+    if !(request_destroy || request_place)
+    {
+        return;
+    }
+
+    let Ok(cam_tf) = cams.single()
+    else
+    {
+        println!("Camera transform is not valid.");
+        return;
+    };
+
+    // Get the camera's origin and direction.
+    let origin = cam_tf.translation();
+    let dir = cam_tf.forward();
+
+    // march a ray out to max_d in steps.
+    let max_d = 6.0;
+    let step = 0.01; // The step is small to prevent missing blocks when clicking on a corner.
+    let mut t = 0.0;
+    let mut last_air_pos: Option<(i32, i32, i32)> = None;
+    let mut last_air_chunk = None;
+
+    // Iterate over the ray from the camera origin in the direction of the camera.
+    while t < max_d
+    {
+        // Calculate the current world position of the ray's end.
+        let p = origin + dir * t;
+        let bx = p.x.floor() as i32;
+        let by = p.y.floor() as i32;
+        let bz = p.z.floor() as i32;
+
+        // Get the chunk in which the ray's end is.
+        let cx = bx.div_euclid(CHUNK_SIZE as i32);
+        let cz = bz.div_euclid(CHUNK_SIZE as i32);
+        let cpos = ChunkPos { x: cx, y: cz };
+
+        // Check if the chunk is loaded.
+        if let Some(&entity) = chunk_map.0.get(&cpos)
+        {
+            if let Ok(mut chunk) = chunks.get_mut(entity)
+            {
+                // Get the local coordinates of the ray's end (in the chunk).
+                let lx = bx - cx * CHUNK_SIZE as i32;
+                let lz = bz - cz * CHUNK_SIZE as i32;
+                if (0 .. CHUNK_SIZE as i32).contains(&lx)
+                    && (0 .. CHUNK_HEIGHT as i32).contains(&by)
+                    && (0 .. CHUNK_SIZE as i32).contains(&lz)
+                {
+                    // Calculate the index of the block in the chunk's blocks array.
+                    let idx = (by as usize) * (CHUNK_SIZE as usize) * (CHUNK_SIZE as usize)
+                        + (lz as usize) * (CHUNK_SIZE as usize)
+                        + (lx as usize);
+
+                    // Check if the block at this index is air.
+                    let current_block = chunk.blocks[idx];
+                    if current_block != BlockType::Air
+                    {
+                        if request_destroy
+                        {
+                            // Destroy the block.
+                            chunk.blocks[idx] = BlockType::Air;
+                            return;
+                        }
+                        else if request_place && last_air_pos.is_some()
+                        {
+                            // Place a block at the last air position we found.
+                            if let (Some((last_x, last_y, last_z)), Some(last_chunk_entity)) =
+                                (last_air_pos, last_air_chunk)
+                            {
+                                // Get the chunk where we want to place the block.
+                                if let Ok(mut target_chunk) = chunks.get_mut(last_chunk_entity)
+                                {
+                                    // Calculate the local coordinates in the target chunk.
+                                    let last_cx = last_x.div_euclid(CHUNK_SIZE as i32);
+                                    let last_cz = last_z.div_euclid(CHUNK_SIZE as i32);
+                                    let last_lx = last_x - last_cx * CHUNK_SIZE as i32;
+                                    let last_lz = last_z - last_cz * CHUNK_SIZE as i32;
+
+                                    // Calculate the index in the target chunk's blocks array.
+                                    let last_idx = (last_y as usize)
+                                        * (CHUNK_SIZE as usize)
+                                        * (CHUNK_SIZE as usize)
+                                        + (last_lz as usize) * (CHUNK_SIZE as usize)
+                                        + (last_lx as usize);
+
+                                    // Place the block at the last air position.
+                                    target_chunk.blocks[last_idx] = BlockType::Grass;
+                                }
+                            }
+                            return;
+                        }
+                        return;
+                    }
+                    else
+                    {
+                        // Keep track of the last air position for block placement.
+                        last_air_pos = Some((bx, by, bz));
+                        last_air_chunk = Some(entity);
+                    }
+                }
+            }
+        }
+        t += step;
+    }
+}
+
+// This system remeshes chunks that have changed since the last frame.
+fn remesh_changed_chunks(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    block_list: Res<BlockList>,
+    base_mat: Res<BaseMaterial>,
+    query: Query<(Entity, &Chunk, Option<&Children>), Changed<Chunk>>,
+    new_chunks: Query<Entity, Added<Chunk>>,
+)
+{
+    // We only want to remesh chunks that were changed in this frame.
+    let just_added: std::collections::HashSet<_> = new_chunks.iter().collect();
+
+    for (entity, chunk, children_opt) in &query
+    {
+        if just_added.contains(&entity)
+        {
+            // This chunk was just added, so we don't need to remesh it.
+            continue;
+        }
+
+        // If the chunk has children, we need to despawn them.
+        if let Some(children) = children_opt
+        {
+            for &child in children
+            {
+                commands.entity(child).despawn();
+            }
+        }
+
+        // Build the new mesh for the chunk.
+        let new_mesh_handle = meshes.add(mesh_chunk(chunk, &*block_list));
+
+        // Insert the new mesh and keep the base material.
+        commands.entity(entity).insert((
+            Mesh3d(new_mesh_handle),
+            // Keep the base material for the mesh.
+            MeshMaterial3d(base_mat.0.clone()),
+        ));
     }
 }
