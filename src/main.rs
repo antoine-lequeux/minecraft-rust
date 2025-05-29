@@ -469,7 +469,11 @@ fn main()
 }
 
 // The setup system creates some global features.
-fn setup(mut commands: Commands, mut windows: Query<&mut Window, With<PrimaryWindow>>)
+fn setup(
+    mut commands: Commands,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+    assets: Res<AssetServer>,
+)
 {
     // Blue sky.
     commands.insert_resource(ClearColor(Color::srgb(0.53, 0.81, 0.92)));
@@ -481,11 +485,21 @@ fn setup(mut commands: Commands, mut windows: Query<&mut Window, With<PrimaryWin
         affects_lightmapped_meshes: true,
     });
 
-    // Camera.
+    // 3D camera.
     commands.spawn((
         Camera3d::default(),
         Transform::from_xyz(30.0, 100.0, 80.0).looking_at(Vec3::ZERO, Vec3::Y),
         FlyCam { speed: 12.0, sprint_mult: 2.0, sensitivity: 0.002, yaw: 0.0, pitch: 0.0 },
+        Camera { order: 0, ..default() },
+    ));
+
+    // 2D camera for the UI.
+    commands.spawn((Camera2d::default(), Camera { order: 1, ..default() }));
+
+    // Crosshair.
+    commands.spawn((
+        Sprite::from_image(assets.load("textures/crosshair.png")),
+        Transform::from_translation(Transform::IDENTITY.translation + Vec3::new(0.0, 0.0, 1.0)),
     ));
 
     // Main light (the sun).
