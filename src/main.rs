@@ -56,7 +56,7 @@ struct ChunkPos
 struct Chunk
 {
     pos: ChunkPos,
-    blocks: [BlockType; TOTAL],
+    blocks: Box<[BlockType; TOTAL]>,
 }
 
 // Each chunk is always loaded using the seed, instead of being saved.
@@ -178,7 +178,7 @@ fn load_raw_chunk(_seed: u64, pos: ChunkPos) -> Chunk
     }
 
     // The chunk is returned.
-    return Chunk { pos, blocks };
+    return Chunk { pos, blocks: blocks.into() };
 }
 
 // This system manages the loading and unloading of chunks based on their
