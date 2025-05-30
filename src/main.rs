@@ -517,7 +517,7 @@ fn setup(
     // Ambient light.
     commands.insert_resource(AmbientLight {
         color: Color::WHITE,
-        brightness: 0.5,
+        brightness: 100.0,
         affects_lightmapped_meshes: true,
     });
 
