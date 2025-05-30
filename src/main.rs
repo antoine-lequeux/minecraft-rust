@@ -5,7 +5,7 @@ use bevy::{
     input::mouse::MouseMotion,
     prelude::*,
     render::mesh::{Indices, PrimitiveTopology},
-    tasks::{AsyncComputeTaskPool, Task, futures_lite},
+    tasks::{AsyncComputeTaskPool, Task},
     window::{CursorGrabMode, PrimaryWindow},
 };
 
@@ -30,13 +30,14 @@ enum BlockType
 
 // A block only has a color, but later it will have a texture instead, and
 // possibly other fields (light emission, full/half...).
+#[derive(Clone)]
 struct Block
 {
     color: Color,
 }
 
 // A simple way to associate blocks to chunks without copying each fields.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Clone)]
 struct BlockList
 {
     data: HashMap<BlockType, Block>,
@@ -52,7 +53,7 @@ struct ChunkPos
 }
 
 // The Chunk component.
-#[derive(Component)]
+#[derive(Component, Clone)]
 struct Chunk
 {
     pos: ChunkPos,
@@ -89,6 +90,13 @@ struct ChunkMap(HashMap<ChunkPos, Entity>);
 struct ChunkLoadState
 {
     tasks: HashMap<ChunkPos, Task<(ChunkPos, Chunk)>>,
+}
+
+// Tracks the meshing state of chunks.
+#[derive(Resource, Default)]
+struct ChunkMeshState
+{
+    tasks: HashMap<ChunkPos, Task<(ChunkPos, Mesh)>>,
 }
 
 // This system is called when the game launches. The data is hard-coded but
@@ -223,10 +231,12 @@ fn manage_chunk_loading(
     {
         if !desired.contains(&old_pos)
         {
+            // Despawn the entity for the chunk and remove it from the map.
             if let Some(e) = chunk_map.0.remove(&old_pos)
             {
                 commands.entity(e).despawn();
             }
+            // Remove any loading tasks for this chunk.
             chunk_state.tasks.remove(&old_pos);
         }
     }
@@ -234,6 +244,7 @@ fn manage_chunk_loading(
     // Chunks that are currently unloaded but are wanted will be loaded.
     for pos in desired
     {
+        // Skip if chunk is already loaded or being loaded.
         if chunk_map.0.contains_key(&pos) || chunk_state.tasks.contains_key(&pos)
         {
             // Already loaded or being loaded.
@@ -244,56 +255,17 @@ fn manage_chunk_loading(
         let modifications = map.modified.get(&pos).cloned().unwrap_or_default();
         let task_pool = AsyncComputeTaskPool::get();
         let task = task_pool.spawn(async move {
+            // Generate the chunk and apply any modifications.
             let mut chunk = load_raw_chunk(seed, pos);
             apply_modifications(&mut chunk, &modifications);
             (pos, chunk)
         });
+        // Insert the loading task into the state.
         chunk_state.tasks.insert(pos, task);
     }
 }
 
-// This system processes completed chunk loading tasks.
-fn process_chunk_tasks(
-    mut commands: Commands,
-    mut chunk_map: ResMut<ChunkMap>,
-    mut chunk_state: ResMut<ChunkLoadState>,
-)
-{
-    use futures_lite::future;
-
-    let mut completed = Vec::new();
-
-    // Check for completed tasks.
-    for (task_pos, task) in chunk_state.tasks.iter_mut()
-    {
-        if let Some((chunk_pos, chunk)) = future::block_on(future::poll_once(task))
-        {
-            // Spawn the chunk entity.
-            let e = commands
-                .spawn((
-                    Transform::from_translation(Vec3::new(
-                        chunk_pos.x as f32 * CHUNK_SIZE as f32,
-                        0.0,
-                        chunk_pos.y as f32 * CHUNK_SIZE as f32,
-                    )),
-                    Visibility::default(),
-                    chunk,
-                ))
-                .id();
-
-            chunk_map.0.insert(chunk_pos, e);
-            completed.push(*task_pos);
-        }
-    }
-
-    // Remove completed tasks.
-    for pos in completed
-    {
-        chunk_state.tasks.remove(&pos);
-    }
-}
-
-// The faces of each block.
+// The faces of each block, used for mesh generation.
 const FACES: &[(IVec3, [[f32; 3]; 4])] = &[
     // +X
     (IVec3::new(1, 0, 0), [[1., 0., 0.], [1., 1., 0.], [1., 1., 1.], [1., 0., 1.]]),
@@ -421,30 +393,87 @@ fn setup_base_material(mut commands: Commands, mut materials: ResMut<Assets<Stan
     commands.insert_resource(BaseMaterial(handle));
 }
 
-// Meshes that were already drawn should not be drawn again.
-// This system will iterate over each newly appeared chunk and draw its mesh.
-fn draw_new_chunks(
+// This system processes completed chunk loading tasks.
+fn process_chunk_tasks(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut chunk_map: ResMut<ChunkMap>,
+    mut chunk_state: ResMut<ChunkLoadState>,
+    mut mesh_state: ResMut<ChunkMeshState>,
     block_list: Res<BlockList>,
-    query: Query<(Entity, &Chunk), Added<Chunk>>,
 )
 {
-    // Create a base material for the mesh. This does not change the color of the
-    // blocks.
-    let mat = materials.add(StandardMaterial::default());
+    use std::task::{Context, Poll};
 
-    // Iterate over each newly generated chunk.
-    for (entity, chunk) in query.iter()
+    use futures_util::task::noop_waker_ref;
+    let mut completed = Vec::new();
+    for (task_pos, task) in chunk_state.tasks.iter_mut()
     {
-        let mesh = mesh_chunk(chunk, &*block_list);
-        let mesh_handle = meshes.add(mesh);
+        let waker = noop_waker_ref();
+        let mut cx = Context::from_waker(waker);
+        if let Poll::Ready((chunk_pos, chunk)) = std::pin::Pin::new(task).poll(&mut cx)
+        {
+            let chunk_clone = chunk.clone();
+            let e = commands
+                .spawn((
+                    Transform::from_translation(Vec3::new(
+                        chunk_pos.x as f32 * CHUNK_SIZE as f32,
+                        0.0,
+                        chunk_pos.y as f32 * CHUNK_SIZE as f32,
+                    )),
+                    Visibility::default(),
+                    chunk,
+                ))
+                .id();
+            chunk_map.0.insert(chunk_pos, e);
+            let chunk_pos_copy = chunk_pos;
+            let block_list = block_list.clone();
+            let task_pool = AsyncComputeTaskPool::get();
+            let mesh_task = task_pool.spawn(async move {
+                let mesh = mesh_chunk(&chunk_clone, &block_list);
+                (chunk_pos_copy, mesh)
+            });
+            mesh_state.tasks.insert(chunk_pos, mesh_task);
+            completed.push(*task_pos);
+        }
+    }
+    for pos in completed
+    {
+        chunk_state.tasks.remove(&pos);
+    }
+}
 
-        // Create an entity associated to the chunk mesh.
-        commands
-            .entity(entity)
-            .insert((Mesh3d(mesh_handle), MeshMaterial3d(mat.clone())));
+// This system processes completed chunk meshing tasks.
+fn process_chunk_mesh_tasks(
+    mut commands: Commands,
+    mut mesh_state: ResMut<ChunkMeshState>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    base_mat: Res<BaseMaterial>,
+    chunk_map: Res<ChunkMap>,
+)
+{
+    use std::task::{Context, Poll};
+
+    use futures_util::task::noop_waker_ref;
+    let mut completed = Vec::new();
+    for (_, task) in mesh_state.tasks.iter_mut()
+    {
+        let waker = noop_waker_ref();
+        let mut cx = Context::from_waker(waker);
+        if let Poll::Ready((chunk_pos, mesh)) = std::pin::Pin::new(task).poll(&mut cx)
+        {
+            if let Some(&entity) = chunk_map.0.get(&chunk_pos)
+            {
+                let mesh_handle = meshes.add(mesh);
+                commands
+                    .entity(entity)
+                    .insert((Mesh3d(mesh_handle), MeshMaterial3d(base_mat.0.clone())));
+            }
+            completed.push(chunk_pos);
+        }
+    }
+    for pos in completed
+    {
+        mesh_state.tasks.remove(&pos);
     }
 }
 
@@ -458,9 +487,13 @@ fn main()
     app.init_resource::<Map>();
     app.init_resource::<ChunkMap>();
     app.init_resource::<ChunkLoadState>();
+    app.init_resource::<ChunkMeshState>();
 
     app.add_systems(Startup, load_block_types);
-    app.add_systems(Update, (manage_chunk_loading, process_chunk_tasks, draw_new_chunks).chain());
+    app.add_systems(
+        Update,
+        (manage_chunk_loading, process_chunk_tasks, process_chunk_mesh_tasks).chain(),
+    );
     app.add_systems(Update, fly_camera_movement);
     app.add_systems(Update, mouse_look);
     app.add_systems(Update, (block_interaction, remesh_changed_chunks).chain());
@@ -659,8 +692,8 @@ fn block_interaction(
     let origin = cam_tf.translation();
     let dir = cam_tf.forward();
 
-    // march a ray out to max_d in steps.
-    let max_d = 6.0;
+    // March a ray out to max_d in steps.
+    let max_d = 8.0;
     let step = 0.01; // The step is small to prevent missing blocks when clicking on a corner.
     let mut t = 0.0;
     let mut last_air_pos: Option<(i32, i32, i32)> = None;
