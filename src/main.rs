@@ -62,18 +62,11 @@ struct Chunk
 // Each chunk is always loaded using the seed, instead of being saved.
 // But we then need to store the modifications that were applied to each chunk,
 // else they will be lost when the player is too far.
+#[derive(Clone)]
 struct Modification
 {
     index: usize,
-    kind: ModificationKind,
-}
-
-// A block can be deleted, or added. If it was added, we must store the block
-// id.
-enum ModificationKind
-{
-    Deleted,
-    Added(usize),
+    new: BlockType,
 }
 
 // The Map resource. It stores the seed for this world, and a list of
@@ -181,6 +174,15 @@ fn load_raw_chunk(_seed: u64, pos: ChunkPos) -> Chunk
     return Chunk { pos, blocks: blocks.into() };
 }
 
+// This function applies any saved modifications to a chunk after it is loaded.
+fn apply_modifications(chunk: &mut Chunk, modifications: &[Modification])
+{
+    for modification in modifications
+    {
+        chunk.blocks[modification.index] = modification.new;
+    }
+}
+
 // This system manages the loading and unloading of chunks based on their
 // position.
 fn manage_chunk_loading(
@@ -237,12 +239,13 @@ fn manage_chunk_loading(
             // Already loaded or being loaded.
             continue;
         }
-
         // Spawn async task to generate the chunk.
         let seed = map.seed;
+        let modifications = map.modified.get(&pos).cloned().unwrap_or_default();
         let task_pool = AsyncComputeTaskPool::get();
         let task = task_pool.spawn(async move {
-            let chunk = load_raw_chunk(seed, pos);
+            let mut chunk = load_raw_chunk(seed, pos);
+            apply_modifications(&mut chunk, &modifications);
             (pos, chunk)
         });
         chunk_state.tasks.insert(pos, task);
@@ -632,6 +635,7 @@ fn block_interaction(
     buttons: Res<ButtonInput<MouseButton>>,
     cams: Query<&GlobalTransform, With<Camera3d>>,
     chunk_map: Res<ChunkMap>,
+    mut map: ResMut<Map>,
     mut chunks: Query<&mut Chunk>,
 )
 {
@@ -701,6 +705,10 @@ fn block_interaction(
                         {
                             // Destroy the block.
                             chunk.blocks[idx] = BlockType::Air;
+                            map.modified
+                                .entry(cpos)
+                                .or_default()
+                                .push(Modification { index: idx, new: BlockType::Air });
                             return;
                         }
                         else if request_place && last_air_pos.is_some()
@@ -727,6 +735,11 @@ fn block_interaction(
 
                                     // Place the block at the last air position.
                                     target_chunk.blocks[last_idx] = BlockType::Grass;
+
+                                    map.modified
+                                        .entry(cpos)
+                                        .or_default()
+                                        .push(Modification { index: idx, new: BlockType::Grass });
                                 }
                             }
                             return;
