@@ -28,12 +28,12 @@ enum BlockType
     Stone,
 }
 
-// A block only has a color, but later it will have a texture instead, and
-// possibly other fields (light emission, full/half...).
+// A block has a set of 6 textures, one per face. Later, it could have more
+// data, for example light emission, or a shape...
 #[derive(Clone)]
-struct Block
+pub struct Block
 {
-    color: Color,
+    faces: [Handle<Image>; 6],
 }
 
 // A simple way to associate blocks to chunks without copying each fields.
@@ -96,24 +96,68 @@ struct ChunkLoadState
 #[derive(Resource, Default)]
 struct ChunkMeshState
 {
-    tasks: HashMap<ChunkPos, Task<(ChunkPos, Mesh)>>,
+    tasks: HashMap<ChunkPos, Task<(ChunkPos, HashMap<Handle<Image>, Mesh>)>>,
 }
 
 // This system is called when the game launches. The data is hard-coded but
 // should be read from a file eventually.
-fn load_block_types(mut list: ResMut<BlockList>)
+fn load_block_types(mut list: ResMut<BlockList>, textures: Res<TextureHandles>)
 {
-    list.data
-        .insert(BlockType::Air, Block { color: Color::NONE });
+    list.data.insert(
+        BlockType::Air,
+        Block {
+            faces: [
+                Handle::default(), // +X
+                Handle::default(), // -X
+                Handle::default(), // +Y (top)
+                Handle::default(), // -Y (bottom)
+                Handle::default(), // +Z
+                Handle::default(), // -Z
+            ],
+        },
+    );
 
-    list.data
-        .insert(BlockType::Grass, Block { color: Color::srgba_u8(116, 184, 22, 255) });
+    list.data.insert(
+        BlockType::Grass,
+        Block {
+            faces: [
+                textures.grass_side.clone(), // +X
+                textures.grass_side.clone(), // -X
+                textures.grass_top.clone(),  // +Y (top)
+                textures.dirt.clone(),       // -Y (bottom)
+                textures.grass_side.clone(), // +Z
+                textures.grass_side.clone(), // -Z
+            ],
+        },
+    );
 
-    list.data
-        .insert(BlockType::Dirt, Block { color: Color::srgba_u8(147, 85, 41, 255) });
+    list.data.insert(
+        BlockType::Dirt,
+        Block {
+            faces: [
+                textures.dirt.clone(), // +X
+                textures.dirt.clone(), // -X
+                textures.dirt.clone(), // +Y (top)
+                textures.dirt.clone(), // -Y (bottom)
+                textures.dirt.clone(), // +Z
+                textures.dirt.clone(), // -Z
+            ],
+        },
+    );
 
-    list.data
-        .insert(BlockType::Stone, Block { color: Color::srgba_u8(134, 142, 150, 255) });
+    list.data.insert(
+        BlockType::Stone,
+        Block {
+            faces: [
+                textures.stone.clone(), // +X
+                textures.stone.clone(), // -X
+                textures.stone.clone(), // +Y (top)
+                textures.stone.clone(), // -Y (bottom)
+                textures.stone.clone(), // +Z
+                textures.stone.clone(), // -Z
+            ],
+        },
+    );
 }
 
 // This function creates a chunk based on its position and the world seed.
@@ -266,38 +310,61 @@ fn manage_chunk_loading(
 }
 
 // The faces of each block, used for mesh generation.
-const FACES: &[(IVec3, [[f32; 3]; 4])] = &[
+const FACES: &[(IVec3, [[f32; 3]; 4], [[f32; 2]; 4])] = &[
     // +X
-    (IVec3::new(1, 0, 0), [[1., 0., 0.], [1., 1., 0.], [1., 1., 1.], [1., 0., 1.]]),
+    (
+        IVec3::new(1, 0, 0),
+        [[1., 0., 0.], [1., 1., 0.], [1., 1., 1.], [1., 0., 1.]],
+        [[0., 1.], [0., 0.], [1., 0.], [1., 1.]],
+    ),
     // -X
-    (IVec3::new(-1, 0, 0), [[0., 0., 1.], [0., 1., 1.], [0., 1., 0.], [0., 0., 0.]]),
-    // +Y
-    (IVec3::new(0, 1, 0), [[0., 1., 0.], [0., 1., 1.], [1., 1., 1.], [1., 1., 0.]]),
-    // -Y
-    (IVec3::new(0, -1, 0), [[0., 0., 1.], [0., 0., 0.], [1., 0., 0.], [1., 0., 1.]]),
+    (
+        IVec3::new(-1, 0, 0),
+        [[0., 0., 1.], [0., 1., 1.], [0., 1., 0.], [0., 0., 0.]],
+        [[0., 1.], [0., 0.], [1., 0.], [1., 1.]],
+    ),
+    // +Y (top)
+    (
+        IVec3::new(0, 1, 0),
+        [[0., 1., 0.], [0., 1., 1.], [1., 1., 1.], [1., 1., 0.]],
+        [[0., 1.], [0., 0.], [1., 0.], [1., 1.]],
+    ),
+    // -Y (bottom)
+    (
+        IVec3::new(0, -1, 0),
+        [[0., 0., 1.], [0., 0., 0.], [1., 0., 0.], [1., 0., 1.]],
+        [[0., 1.], [0., 0.], [1., 0.], [1., 1.]],
+    ),
     // +Z
-    (IVec3::new(0, 0, 1), [[1., 0., 1.], [1., 1., 1.], [0., 1., 1.], [0., 0., 1.]]),
+    (
+        IVec3::new(0, 0, 1),
+        [[1., 0., 1.], [1., 1., 1.], [0., 1., 1.], [0., 0., 1.]],
+        [[0., 1.], [0., 0.], [1., 0.], [1., 1.]],
+    ),
     // -Z
-    (IVec3::new(0, 0, -1), [[0., 0., 0.], [0., 1., 0.], [1., 1., 0.], [1., 0., 0.]]),
+    (
+        IVec3::new(0, 0, -1),
+        [[0., 0., 0.], [0., 1., 0.], [1., 1., 0.], [1., 0., 0.]],
+        [[0., 1.], [0., 0.], [1., 0.], [1., 1.]],
+    ),
 ];
 
 // It would be too costly to create one mesh per block.
 // With a render distance of 16 chunks, more that 70 million blocks could be
 // loaded. Instead, we will create one mesh per chunk, and display only the
 // exposed faces of this mesh.
-fn mesh_chunk(chunk: &Chunk, block_list: &BlockList) -> Mesh
+fn mesh_chunk(chunk: &Chunk, block_list: &BlockList) -> HashMap<Handle<Image>, Mesh>
 {
-    let mut positions = Vec::new();
-    let mut normals = Vec::new();
-    let mut colors = Vec::new();
-    let mut indices = Vec::new();
-    let mut idx_counter = 0u32;
+    // For each texture, we store positions, normals, UVs and indices.
+    let mut per_tex: HashMap<
+        Handle<Image>,
+        (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>),
+    > = HashMap::new();
 
     let cs = CHUNK_SIZE as usize;
     let ch = CHUNK_HEIGHT as usize;
 
-    // This lambda takes the 3 coordinates of a block in a chunk and returns the
-    // block type.
+    // Helper closure to get the block type at (x, y, z) in the chunk.
     let get = |x: i32, y: i32, z: i32| {
         if !(0 .. cs as i32).contains(&x)
             || !(0 .. ch as i32).contains(&y)
@@ -312,85 +379,77 @@ fn mesh_chunk(chunk: &Chunk, block_list: &BlockList) -> Mesh
         chunk.blocks[idx]
     };
 
-    // Iterate over the 3 dimensions.
+    // Iterate over all blocks in the chunk.
     for z in 0 .. cs
     {
         for y in 0 .. ch
         {
             for x in 0 .. cs
             {
-                // Get the block type.
+                // Get the block type at this position.
                 let b = chunk.blocks[y * cs * cs + z * cs + x];
-
                 if b == BlockType::Air
                 {
-                    // Air blocks will not be part of the mesh.
+                    // Skip air blocks.
                     continue;
                 }
+                // Get the texture handles for each face of this block.
+                let face_tex = &block_list.data[&b].faces;
 
-                // Get the color of the block.
-                let col = block_list.data[&b].color.to_linear().to_f32_array();
-
-                // Iterate over the faces of the block.
-                for &(dir, verts) in FACES
+                // Iterate over each face (+X, -X, +Y, -Y, +Z, -Z).
+                for (face_idx, &(dir, verts, base_uvs)) in FACES.iter().enumerate()
                 {
-                    let nx = x as i32 + dir.x;
-                    let ny = y as i32 + dir.y;
-                    let nz = z as i32 + dir.z;
-                    if get(nx, ny, nz) != BlockType::Air
+                    // Only add the face if the neighbor in that direction is air.
+                    if get(x as i32 + dir.x, y as i32 + dir.y, z as i32 + dir.z) != BlockType::Air
                     {
-                        // This face is hidden by another block.
                         continue;
                     }
 
-                    // Create a quad for this face.
-                    for vert in verts
+                    // Get the texture for this face.
+                    let tex = &face_tex[face_idx];
+
+                    // Get or create the mesh data for this texture.
+                    let entry = per_tex.entry(tex.clone()).or_default();
+                    let base_index = entry.0.len() as u32;
+
+                    // Add the 4 vertices for this face.
+                    for i in 0 .. 4
                     {
-                        positions.push([
-                            x as f32 + vert[0],
-                            y as f32 + vert[1],
-                            z as f32 + vert[2],
+                        entry.0.push([
+                            x as f32 + verts[i][0],
+                            y as f32 + verts[i][1],
+                            z as f32 + verts[i][2],
                         ]);
-                        normals.push([dir.x as f32, dir.y as f32, dir.z as f32]);
-                        colors.push(col);
+                        entry.1.push([dir.x as f32, dir.y as f32, dir.z as f32]);
+                        entry.2.push(base_uvs[i]);
                     }
-                    // Create two triangles for this quad.
-                    indices.extend_from_slice(&[
-                        idx_counter,
-                        idx_counter + 1,
-                        idx_counter + 2,
-                        idx_counter,
-                        idx_counter + 2,
-                        idx_counter + 3,
+
+                    // Add the two triangles (6 indices) for this face.
+                    entry.3.extend_from_slice(&[
+                        base_index,
+                        base_index + 1,
+                        base_index + 2,
+                        base_index,
+                        base_index + 2,
+                        base_index + 3,
                     ]);
-                    idx_counter += 4;
                 }
             }
         }
     }
 
-    // Create a new mesh.
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
-
-    // Populate the mesh with the data we calculated.
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-    mesh.insert_indices(Indices::U32(indices));
-
-    // Return the mesh.
-    return mesh;
-}
-
-/// A handle to the neutral white material we want to reuse every time.
-#[derive(Resource)]
-struct BaseMaterial(pub Handle<StandardMaterial>);
-
-/// Create the material once at startup.
-fn setup_base_material(mut commands: Commands, mut materials: ResMut<Assets<StandardMaterial>>)
-{
-    let handle = materials.add(StandardMaterial { base_color: Color::WHITE, ..default() });
-    commands.insert_resource(BaseMaterial(handle));
+    // Convert the per-texture mesh data into actual Mesh objects.
+    per_tex
+        .into_iter()
+        .map(|(tex, (pos, norm, uv, idx))| {
+            let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, norm);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+            mesh.insert_indices(Indices::U32(idx));
+            (tex, mesh)
+        })
+        .collect()
 }
 
 // This system processes completed chunk loading tasks.
@@ -429,8 +488,8 @@ fn process_chunk_tasks(
             let block_list = block_list.clone();
             let task_pool = AsyncComputeTaskPool::get();
             let mesh_task = task_pool.spawn(async move {
-                let mesh = mesh_chunk(&chunk_clone, &block_list);
-                (chunk_pos_copy, mesh)
+                let meshes_by_tex = mesh_chunk(&chunk_clone, &block_list);
+                (chunk_pos_copy, meshes_by_tex)
             });
             mesh_state.tasks.insert(chunk_pos, mesh_task);
             completed.push(*task_pos);
@@ -447,7 +506,7 @@ fn process_chunk_mesh_tasks(
     mut commands: Commands,
     mut mesh_state: ResMut<ChunkMeshState>,
     mut meshes: ResMut<Assets<Mesh>>,
-    base_mat: Res<BaseMaterial>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     chunk_map: Res<ChunkMap>,
 )
 {
@@ -459,14 +518,27 @@ fn process_chunk_mesh_tasks(
     {
         let waker = noop_waker_ref();
         let mut cx = Context::from_waker(waker);
-        if let Poll::Ready((chunk_pos, mesh)) = std::pin::Pin::new(task).poll(&mut cx)
+        if let Poll::Ready((chunk_pos, meshes_by_tex)) = std::pin::Pin::new(task).poll(&mut cx)
         {
-            if let Some(&entity) = chunk_map.0.get(&chunk_pos)
+            if let Some(&chunk_entity) = chunk_map.0.get(&chunk_pos)
             {
-                let mesh_handle = meshes.add(mesh);
-                commands
-                    .entity(entity)
-                    .insert((Mesh3d(mesh_handle), MeshMaterial3d(base_mat.0.clone())));
+                for (tex_handle, mesh) in meshes_by_tex
+                {
+                    let mat_handle = materials.add(StandardMaterial {
+                        base_color_texture: Some(tex_handle.clone()),
+                        alpha_mode: AlphaMode::Mask(0.5),
+                        ..default()
+                    });
+                    let mesh_handle = meshes.add(mesh);
+
+                    commands.entity(chunk_entity).with_children(|c| {
+                        c.spawn((
+                            Mesh3d(mesh_handle),
+                            MeshMaterial3d(mat_handle),
+                            Visibility::default(),
+                        ));
+                    });
+                }
             }
             completed.push(chunk_pos);
         }
@@ -481,15 +553,15 @@ fn main()
 {
     let mut app = App::new();
 
-    app.add_plugins(DefaultPlugins);
+    // ImagePlugin is modified to use nearest filtering for pixelated textures.
+    app.add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()));
 
     app.init_resource::<BlockList>();
     app.init_resource::<Map>();
     app.init_resource::<ChunkMap>();
     app.init_resource::<ChunkLoadState>();
     app.init_resource::<ChunkMeshState>();
-
-    app.add_systems(Startup, load_block_types);
+    app.add_systems(Startup, load_block_types.after(setup));
     app.add_systems(
         Update,
         (manage_chunk_loading, process_chunk_tasks, process_chunk_mesh_tasks).chain(),
@@ -497,11 +569,20 @@ fn main()
     app.add_systems(Update, fly_camera_movement);
     app.add_systems(Update, mouse_look);
     app.add_systems(Update, (block_interaction, remesh_changed_chunks).chain());
-    app.add_systems(Startup, setup_base_material);
 
     app.add_systems(Startup, setup);
 
     app.run();
+}
+
+// The TextureHandles resource stores handles to all block textures.
+#[derive(Resource)]
+struct TextureHandles
+{
+    grass_side: Handle<Image>,
+    grass_top: Handle<Image>,
+    dirt: Handle<Image>,
+    stone: Handle<Image>,
 }
 
 // The setup system creates some global features.
@@ -511,6 +592,14 @@ fn setup(
     assets: Res<AssetServer>,
 )
 {
+    // Load block textures.
+    commands.insert_resource(TextureHandles {
+        grass_side: assets.load("textures/grass_side.png"),
+        grass_top: assets.load("textures/grass_top.png"),
+        dirt: assets.load("textures/dirt.png"),
+        stone: assets.load("textures/stone.png"),
+    });
+
     // Blue sky.
     commands.insert_resource(ClearColor(Color::srgb(0.53, 0.81, 0.92)));
 
@@ -796,18 +885,20 @@ fn block_interaction(
 fn remesh_changed_chunks(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     block_list: Res<BlockList>,
-    base_mat: Res<BaseMaterial>,
     query: Query<(Entity, &Chunk, Option<&Children>), Changed<Chunk>>,
     new_chunks: Query<Entity, Added<Chunk>>,
 )
 {
-    // We only want to remesh chunks that were changed in this frame.
-    let just_added: std::collections::HashSet<_> = new_chunks.iter().collect();
+    use std::collections::HashSet;
 
-    for (entity, chunk, children_opt) in &query
+    // We only want to remesh chunks that were changed in this frame.
+    let just_added: HashSet<_> = new_chunks.iter().collect();
+
+    for (chunk_entity, chunk, children_opt) in &query
     {
-        if just_added.contains(&entity)
+        if just_added.contains(&chunk_entity)
         {
             // This chunk was just added, so we don't need to remesh it.
             continue;
@@ -822,14 +913,29 @@ fn remesh_changed_chunks(
             }
         }
 
-        // Build the new mesh for the chunk.
-        let new_mesh_handle = meshes.add(mesh_chunk(chunk, &*block_list));
+        // Build the new meshes for the chunk, one per texture.
+        let meshes_by_tex = mesh_chunk(chunk, &*block_list);
 
-        // Insert the new mesh and keep the base material.
-        commands.entity(entity).insert((
-            Mesh3d(new_mesh_handle),
-            // Keep the base material for the mesh.
-            MeshMaterial3d(base_mat.0.clone()),
-        ));
+        // Spawn one child per (texture, mesh).
+        commands.entity(chunk_entity).with_children(|parent| {
+            for (tex_handle, mesh) in meshes_by_tex
+            {
+                let mesh_handle = meshes.add(mesh);
+
+                // Standard material.
+                let mat_handle = materials.add(StandardMaterial {
+                    base_color_texture: Some(tex_handle.clone()),
+                    alpha_mode: AlphaMode::Mask(0.5), // keep cut-out alpha
+                    ..default()
+                });
+
+                // Spawn the mesh.
+                parent.spawn((
+                    Mesh3d(mesh_handle),
+                    MeshMaterial3d(mat_handle),
+                    Visibility::default(),
+                ));
+            }
+        });
     }
 }
