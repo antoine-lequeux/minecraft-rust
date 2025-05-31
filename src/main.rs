@@ -15,7 +15,7 @@ const CHUNK_HEIGHT: u16 = 256;
 const TOTAL: usize = (CHUNK_SIZE as usize).pow(2) * CHUNK_HEIGHT as usize;
 
 // How many chunks should be loaded in each direction.
-const RENDER_DISTANCE: i32 = 16;
+const RENDER_DISTANCE: i32 = 24;
 
 // Block types are hard-coded but should be loaded from a file later.
 #[repr(u16)]
@@ -235,6 +235,11 @@ fn apply_modifications(chunk: &mut Chunk, modifications: &[Modification])
     }
 }
 
+fn count_chunks(query: Query<(), With<Chunk>>)
+{
+    println!("Loaded chunks: {}", query.iter().count());
+}
+
 // This system manages the loading and unloading of chunks based on their
 // position.
 fn manage_chunk_loading(
@@ -245,18 +250,60 @@ fn manage_chunk_loading(
     camera: Query<&Transform, With<FlyCam>>,
 )
 {
-    // Get player chunk position.
-    let player_chunk = match camera.single()
+    // Get player chunk position and camera info.
+    let (player_chunk, cam_pos, cam_forward) = match camera.single()
     {
         Ok(cam) =>
         {
             let cam_pos = cam.translation;
             let chunk_x = (cam_pos.x / CHUNK_SIZE as f32).floor() as i32;
             let chunk_y = (cam_pos.z / CHUNK_SIZE as f32).floor() as i32;
-            ChunkPos { x: chunk_x, y: chunk_y }
+            (ChunkPos { x: chunk_x, y: chunk_y }, cam_pos, cam.forward())
         },
-        // If there was a problem retrieving the camera data, we use a default position.
-        Err(_) => ChunkPos { x: 0, y: 0 },
+        Err(_) => (ChunkPos { x: 0, y: 0 }, Vec3::ZERO, Dir3::Z),
+    };
+
+    // Camera FOV and culling parameters.
+    let fov_cos = (180.0f32.to_radians() / 2.0).cos(); // 60 deg FOV
+    let max_dist = (RENDER_DISTANCE as f32 + 0.5) * CHUNK_SIZE as f32;
+
+    let cam_forward_xz = {
+        let mut v = cam_forward.as_vec3();
+        v.y = 0.0;
+        if v.length_squared() > 0.0
+        {
+            v = v.normalize();
+        }
+        v
+    };
+
+    // A helper to determine if a chunk is visible from the camera pov.
+    let is_chunk_visible = |chunk_pos: ChunkPos| {
+
+        // Always show the chunk under the player and its neighbors in a radius of 2.
+        if (chunk_pos.x - player_chunk.x).abs() <= 2 && (chunk_pos.y - player_chunk.y).abs() <= 2
+        {
+            return true;
+        }
+        let center = Vec3::new(
+            (chunk_pos.x as f32 + 0.5) * CHUNK_SIZE as f32,
+            CHUNK_HEIGHT as f32 / 2.0,
+            (chunk_pos.y as f32 + 0.5) * CHUNK_SIZE as f32,
+        );
+        let to_center = center - cam_pos;
+        let dist = to_center.length();
+        if dist > max_dist
+        {
+            return false;
+        }
+        let mut dir = to_center;
+        dir.y = 0.0;
+        if dir.length_squared() == 0.0
+        {
+            return true;
+        }
+        let dir = dir.normalize();
+        cam_forward_xz.dot(dir) > fov_cos
     };
 
     // The player's chunk's position will be used to determine the chunks that
@@ -266,7 +313,11 @@ fn manage_chunk_loading(
     {
         for dx in -RENDER_DISTANCE ..= RENDER_DISTANCE
         {
-            desired.push(ChunkPos { x: player_chunk.x + dx, y: player_chunk.y + dz });
+            let pos = ChunkPos { x: player_chunk.x + dx, y: player_chunk.y + dz };
+            if is_chunk_visible(pos)
+            {
+                desired.push(pos);
+            }
         }
     }
 
@@ -567,6 +618,7 @@ fn main()
         (manage_chunk_loading, process_chunk_tasks, process_chunk_mesh_tasks).chain(),
     );
     app.add_systems(Update, fly_camera_movement);
+    // app.add_systems(Update, count_chunks);
     app.add_systems(Update, mouse_look);
     app.add_systems(Update, (block_interaction, remesh_changed_chunks).chain());
 
@@ -616,6 +668,14 @@ fn setup(
         Transform::from_xyz(30.0, 100.0, 80.0).looking_at(Vec3::ZERO, Vec3::Y),
         FlyCam { speed: 12.0, sprint_mult: 2.0, sensitivity: 0.002, yaw: 0.0, pitch: 0.0 },
         Camera { order: 0, ..default() },
+        DistanceFog {
+            color: Color::srgb(0.53, 0.81, 0.92),
+            falloff: FogFalloff::Linear {
+                start: (RENDER_DISTANCE - 2) as f32 * 16.0,
+                end: RENDER_DISTANCE as f32 * 16.0,
+            },
+            ..Default::default()
+        },
     ));
 
     // 2D camera for the UI.
@@ -742,7 +802,7 @@ fn mouse_look(mut motion: EventReader<MouseMotion>, mut query: Query<(&mut FlyCa
             // Clamp the pitch to [-90°, +90°].
             flycam.pitch = flycam
                 .pitch
-                .clamp(-90.0_f32.to_radians(), 90.0_f32.to_radians());
+                .clamp(-89.0_f32.to_radians(), 89.0_f32.to_radians());
 
             // Update the actual transform.rotation.
             transform.rotation = Quat::from_euler(EulerRot::YXZ, flycam.yaw, flycam.pitch, 0.0);
