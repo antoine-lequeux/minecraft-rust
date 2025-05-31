@@ -2,6 +2,7 @@ use std::{cmp, collections::HashMap};
 
 use bevy::{
     asset::RenderAssetUsages,
+    diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     input::mouse::MouseMotion,
     prelude::*,
     render::mesh::{Indices, PrimitiveTopology},
@@ -264,7 +265,7 @@ fn manage_chunk_loading(
     };
 
     // Camera FOV and culling parameters.
-    let fov_cos = (180.0f32.to_radians() / 2.0).cos(); // 60 deg FOV
+    let fov_cos = (180.0f32.to_radians() / 2.0).cos();
     let max_dist = (RENDER_DISTANCE as f32 + 0.5) * CHUNK_SIZE as f32;
 
     let cam_forward_xz = {
@@ -279,7 +280,6 @@ fn manage_chunk_loading(
 
     // A helper to determine if a chunk is visible from the camera pov.
     let is_chunk_visible = |chunk_pos: ChunkPos| {
-
         // Always show the chunk under the player and its neighbors in a radius of 2.
         if (chunk_pos.x - player_chunk.x).abs() <= 2 && (chunk_pos.y - player_chunk.y).abs() <= 2
         {
@@ -605,7 +605,10 @@ fn main()
     let mut app = App::new();
 
     // ImagePlugin is modified to use nearest filtering for pixelated textures.
-    app.add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()));
+    app.add_plugins((
+        DefaultPlugins.set(ImagePlugin::default_nearest()),
+        FrameTimeDiagnosticsPlugin::default(),
+    ));
 
     app.init_resource::<BlockList>();
     app.init_resource::<Map>();
@@ -621,6 +624,8 @@ fn main()
     // app.add_systems(Update, count_chunks);
     app.add_systems(Update, mouse_look);
     app.add_systems(Update, (block_interaction, remesh_changed_chunks).chain());
+
+    app.add_systems(Update, text_update_system);
 
     app.add_systems(Startup, setup);
 
@@ -697,6 +702,25 @@ fn setup(
             -std::f32::consts::FRAC_PI_4,
         )),
     ));
+
+    // FPS counter.
+    commands
+        .spawn((
+            // Create a Text with multiple possible spans.
+            Text::new("FPS: "),
+            TextFont { font: assets.load("fonts/minecraft.otf"), font_size: 30.0, ..default() },
+        ))
+        .with_child((
+            // Create a TextSpan that will be updated with the FPS value.
+            TextSpan::default(),
+            TextFont {
+                font: assets.load("fonts/minecraft.otf"),
+                font_size: 30.0,
+                ..Default::default()
+            },
+            // Initialize the timer.
+            FpsText { timer: Timer::from_seconds(0.5, TimerMode::Repeating) },
+        ));
 
     // Lock cursor position.
     for mut window in windows.iter_mut()
@@ -997,5 +1021,39 @@ fn remesh_changed_chunks(
                 ));
             }
         });
+    }
+}
+
+// Marker struct to help identify the FPS UI component, since there may be many
+// Text components.
+#[derive(Component)]
+struct FpsText
+{
+    timer: Timer,
+}
+
+// This systems periodically updates the FPS text in the UI.
+fn text_update_system(
+    diagnostics: Res<DiagnosticsStore>,
+    mut query: Query<(&mut TextSpan, &mut FpsText)>,
+    time: Res<Time>,
+)
+{
+    for (mut span, mut fps_text) in &mut query
+    {
+        // Only update the counter if the timer period has just ended.
+        if fps_text.timer.tick(time.delta()).just_finished()
+        {
+            // Get the FPS diagnostic.
+            if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS)
+            {
+                // Get the smoothed FPS value.
+                if let Some(value) = fps.smoothed()
+                {
+                    // Update the text.
+                    **span = format!("{value:.0}");
+                }
+            }
+        }
     }
 }
