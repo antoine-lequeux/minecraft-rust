@@ -1,9 +1,14 @@
-use std::{cmp, collections::HashMap};
+use std::{
+    cmp,
+    collections::HashMap,
+    ops::{Add, Sub},
+};
 
 use bevy::{
     asset::RenderAssetUsages,
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     input::mouse::MouseMotion,
+    math::ops::sqrt,
     prelude::*,
     render::mesh::{Indices, PrimitiveTopology},
     tasks::{AsyncComputeTaskPool, Task},
@@ -16,7 +21,7 @@ const CHUNK_HEIGHT: u16 = 256;
 const TOTAL: usize = (CHUNK_SIZE as usize).pow(2) * CHUNK_HEIGHT as usize;
 
 // How many chunks should be loaded in each direction.
-const RENDER_DISTANCE: i32 = 24;
+const RENDER_DISTANCE: i32 = 32;
 
 // Block types are hard-coded but should be loaded from a file later.
 #[repr(u16)]
@@ -47,10 +52,30 @@ struct BlockList
 // A struct representing the horizontal position of a chunk. It can serve as an
 // ID for a chunk.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-struct ChunkPos
+pub struct ChunkPos
 {
     x: i32,
     y: i32,
+}
+
+impl Add for ChunkPos
+{
+    type Output = ChunkPos;
+
+    fn add(self, other: ChunkPos) -> ChunkPos
+    {
+        ChunkPos { x: self.x + other.x, y: self.y + other.y }
+    }
+}
+
+impl Sub for ChunkPos
+{
+    type Output = ChunkPos;
+
+    fn sub(self, other: ChunkPos) -> ChunkPos
+    {
+        ChunkPos { x: self.x - other.x, y: self.y - other.y }
+    }
 }
 
 // The Chunk component.
@@ -84,7 +109,10 @@ struct Map
 // It allows the program to load chunks that are in range and unload those that
 // are far away.
 #[derive(Resource, Default)]
-struct ChunkMap(HashMap<ChunkPos, Entity>);
+pub struct ChunkMap
+{
+    pub loaded_chunks: HashMap<ChunkPos, Entity>,
+}
 
 // Tracks the loading state of chunks.
 #[derive(Resource, Default)]
@@ -265,7 +293,7 @@ fn manage_chunk_loading(
     };
 
     // Camera FOV and culling parameters.
-    let fov_cos = (180.0f32.to_radians() / 2.0).cos();
+    let fov_cos = (220.0f32.to_radians() / 2.0).cos();
     let max_dist = (RENDER_DISTANCE as f32 + 0.5) * CHUNK_SIZE as f32;
 
     let cam_forward_xz = {
@@ -313,6 +341,11 @@ fn manage_chunk_loading(
     {
         for dx in -RENDER_DISTANCE ..= RENDER_DISTANCE
         {
+            if sqrt((dx * dx + dz * dz) as f32) > RENDER_DISTANCE as f32
+            {
+                // Skip chunks that are too far, to create a circular rendered terrain.
+                continue;
+            }
             let pos = ChunkPos { x: player_chunk.x + dx, y: player_chunk.y + dz };
             if is_chunk_visible(pos)
             {
@@ -322,12 +355,12 @@ fn manage_chunk_loading(
     }
 
     // Chunks that are currenlty loaded but are not wanted will be unloaded.
-    for old_pos in chunk_map.0.keys().cloned().collect::<Vec<_>>()
+    for old_pos in chunk_map.loaded_chunks.keys().cloned().collect::<Vec<_>>()
     {
         if !desired.contains(&old_pos)
         {
             // Despawn the entity for the chunk and remove it from the map.
-            if let Some(e) = chunk_map.0.remove(&old_pos)
+            if let Some(e) = chunk_map.loaded_chunks.remove(&old_pos)
             {
                 commands.entity(e).despawn();
             }
@@ -340,7 +373,7 @@ fn manage_chunk_loading(
     for pos in desired
     {
         // Skip if chunk is already loaded or being loaded.
-        if chunk_map.0.contains_key(&pos) || chunk_state.tasks.contains_key(&pos)
+        if chunk_map.loaded_chunks.contains_key(&pos) || chunk_state.tasks.contains_key(&pos)
         {
             // Already loaded or being loaded.
             continue;
@@ -404,7 +437,11 @@ const FACES: &[(IVec3, [[f32; 3]; 4], [[f32; 2]; 4])] = &[
 // With a render distance of 16 chunks, more that 70 million blocks could be
 // loaded. Instead, we will create one mesh per chunk, and display only the
 // exposed faces of this mesh.
-fn mesh_chunk(chunk: &Chunk, block_list: &BlockList) -> HashMap<Handle<Image>, Mesh>
+fn mesh_chunk(
+    chunk: &Chunk,
+    block_list: &BlockList,
+    neighbor_chunks: &HashMap<ChunkPos, Chunk>,
+) -> HashMap<Handle<Image>, Mesh>
 {
     // For each texture, we store positions, normals, UVs and indices.
     let mut per_tex: HashMap<
@@ -414,31 +451,78 @@ fn mesh_chunk(chunk: &Chunk, block_list: &BlockList) -> HashMap<Handle<Image>, M
 
     let cs = CHUNK_SIZE as usize;
     let ch = CHUNK_HEIGHT as usize;
+    let cs_i32 = CHUNK_SIZE as i32;
+    let ch_i32 = CHUNK_HEIGHT as i32;
 
-    // Helper closure to get the block type at (x, y, z) in the chunk.
-    let get = |x: i32, y: i32, z: i32| {
-        if !(0 .. cs as i32).contains(&x)
-            || !(0 .. ch as i32).contains(&y)
-            || !(0 .. cs as i32).contains(&z)
+    // Helper closure to check if a block is solid at the given coordinates.
+    let is_solid = |mut req_x: i32, req_y: i32, mut req_z: i32| -> bool {
+        if !(0 .. ch_i32).contains(&req_y)
         {
-            return BlockType::Air;
+            // If the y coordinate is below 0 or above the chunk height, it's not part of
+            // the world.
+            return false;
         }
-        let xi = x as usize;
-        let yi = y as usize;
-        let zi = z as usize;
-        let idx = yi * cs * cs + zi * cs + xi;
-        chunk.blocks[idx]
+
+        // Get the chunk in which the block is located.
+        let mut target_chunk_pos = chunk.pos;
+
+        // Determine if we need to look in a neighbor chunk based on x coordinate.
+        if req_x < 0
+        {
+            target_chunk_pos.x -= 1;
+            req_x += cs_i32;
+        }
+        else if req_x >= cs_i32
+        {
+            target_chunk_pos.x += 1;
+            req_x -= cs_i32;
+        }
+
+        // Determine if we need to look in a neighbor chunk based on z coordinate.
+        // Note: ChunkPos.y stores the world's Z coordinate for the chunk.
+        if req_z < 0
+        {
+            target_chunk_pos.y -= 1;
+            req_z += cs_i32;
+        }
+        else if req_z >= cs_i32
+        {
+            target_chunk_pos.y += 1;
+            req_z -= cs_i32;
+        }
+
+        let chunk_data_to_use = if target_chunk_pos == chunk.pos
+        {
+            // Use the main chunk passed to mesh_chunk.
+            Some(chunk)
+        }
+        else
+        {
+            // Get the chunk data from the neighbor_chunks map.
+            neighbor_chunks.get(&target_chunk_pos) // Look up in the passed neighbor_chunks map
+        };
+
+        if let Some(selected_chunk) = chunk_data_to_use
+        {
+            // req_x, req_y, req_z are now local to selected_chunk.
+            let idx = (req_y as usize) * cs * cs + (req_z as usize) * cs + (req_x as usize);
+            return selected_chunk.blocks[idx] != BlockType::Air;
+        }
+
+        // If the neighbor chunk is not loaded yet, we assume the block is solid to hide
+        // the face. This is a behaviour that will need to be fixed later.
+        return true;
     };
 
     // Iterate over all blocks in the chunk.
-    for z in 0 .. cs
+    for z_local in 0 .. cs
     {
-        for y in 0 .. ch
+        for y_local in 0 .. ch
         {
-            for x in 0 .. cs
+            for x_local in 0 .. cs
             {
                 // Get the block type at this position.
-                let b = chunk.blocks[y * cs * cs + z * cs + x];
+                let b = chunk.blocks[y_local * cs * cs + z_local * cs + x_local];
                 if b == BlockType::Air
                 {
                     // Skip air blocks.
@@ -450,8 +534,13 @@ fn mesh_chunk(chunk: &Chunk, block_list: &BlockList) -> HashMap<Handle<Image>, M
                 // Iterate over each face (+X, -X, +Y, -Y, +Z, -Z).
                 for (face_idx, &(dir, verts, base_uvs)) in FACES.iter().enumerate()
                 {
+                    // Determine the coordinates of the block to check in the neighboring space.
+                    let neighbor_check_x = x_local as i32 + dir.x;
+                    let neighbor_check_y = y_local as i32 + dir.y;
+                    let neighbor_check_z = z_local as i32 + dir.z;
+
                     // Only add the face if the neighbor in that direction is air.
-                    if get(x as i32 + dir.x, y as i32 + dir.y, z as i32 + dir.z) != BlockType::Air
+                    if is_solid(neighbor_check_x, neighbor_check_y, neighbor_check_z)
                     {
                         continue;
                     }
@@ -467,9 +556,9 @@ fn mesh_chunk(chunk: &Chunk, block_list: &BlockList) -> HashMap<Handle<Image>, M
                     for i in 0 .. 4
                     {
                         entry.0.push([
-                            x as f32 + verts[i][0],
-                            y as f32 + verts[i][1],
-                            z as f32 + verts[i][2],
+                            x_local as f32 + verts[i][0],
+                            y_local as f32 + verts[i][1],
+                            z_local as f32 + verts[i][2],
                         ]);
                         entry.1.push([dir.x as f32, dir.y as f32, dir.z as f32]);
                         entry.2.push(base_uvs[i]);
@@ -504,12 +593,42 @@ fn mesh_chunk(chunk: &Chunk, block_list: &BlockList) -> HashMap<Handle<Image>, M
 }
 
 // This system processes completed chunk loading tasks.
+
+// Helper function to get data for neighboring chunks.
+fn get_neighbor_chunk_data(
+    current_chunk_pos: ChunkPos,
+    chunk_map: &ChunkMap,
+    all_chunks_query: &Query<&Chunk>,
+) -> HashMap<ChunkPos, Chunk>
+{
+    let mut neighbor_chunks_data = HashMap::new();
+    let neighbor_offsets = [
+        ChunkPos { x: -1, y: 0 },
+        ChunkPos { x: 1, y: 0 },
+        ChunkPos { x: 0, y: -1 },
+        ChunkPos { x: 0, y: 1 },
+    ];
+    for offset in &neighbor_offsets
+    {
+        let neighbor_pos = current_chunk_pos + *offset;
+        if let Some(entity) = chunk_map.loaded_chunks.get(&neighbor_pos)
+        {
+            if let Ok(chunk_component) = all_chunks_query.get(*entity)
+            {
+                neighbor_chunks_data.insert(neighbor_pos, chunk_component.clone());
+            }
+        }
+    }
+    neighbor_chunks_data
+}
+
 fn process_chunk_tasks(
     mut commands: Commands,
     mut chunk_map: ResMut<ChunkMap>,
     mut chunk_state: ResMut<ChunkLoadState>,
     mut mesh_state: ResMut<ChunkMeshState>,
     block_list: Res<BlockList>,
+    all_chunks_query: Query<&Chunk>,
 )
 {
     use std::task::{Context, Poll};
@@ -534,12 +653,17 @@ fn process_chunk_tasks(
                     chunk,
                 ))
                 .id();
-            chunk_map.0.insert(chunk_pos, e);
+            chunk_map.loaded_chunks.insert(chunk_pos, e);
             let chunk_pos_copy = chunk_pos;
             let block_list = block_list.clone();
             let task_pool = AsyncComputeTaskPool::get();
+
+            // Prepare neighbor data for mesh_chunk.
+            let neighbor_chunks_data =
+                get_neighbor_chunk_data(chunk_pos, &chunk_map, &all_chunks_query);
+
             let mesh_task = task_pool.spawn(async move {
-                let meshes_by_tex = mesh_chunk(&chunk_clone, &block_list);
+                let meshes_by_tex = mesh_chunk(&chunk_clone, &block_list, &neighbor_chunks_data);
                 (chunk_pos_copy, meshes_by_tex)
             });
             mesh_state.tasks.insert(chunk_pos, mesh_task);
@@ -571,7 +695,7 @@ fn process_chunk_mesh_tasks(
         let mut cx = Context::from_waker(waker);
         if let Poll::Ready((chunk_pos, meshes_by_tex)) = std::pin::Pin::new(task).poll(&mut cx)
         {
-            if let Some(&chunk_entity) = chunk_map.0.get(&chunk_pos)
+            if let Some(&chunk_entity) = chunk_map.loaded_chunks.get(&chunk_pos)
             {
                 for (tex_handle, mesh) in meshes_by_tex
                 {
@@ -887,7 +1011,7 @@ fn block_interaction(
         let cpos = ChunkPos { x: cx, y: cz };
 
         // Check if the chunk is loaded.
-        if let Some(&entity) = chunk_map.0.get(&cpos)
+        if let Some(&entity) = chunk_map.loaded_chunks.get(&cpos)
         {
             if let Ok(mut chunk) = chunks.get_mut(entity)
             {
@@ -973,6 +1097,8 @@ fn remesh_changed_chunks(
     block_list: Res<BlockList>,
     query: Query<(Entity, &Chunk, Option<&Children>), Changed<Chunk>>,
     new_chunks: Query<Entity, Added<Chunk>>,
+    chunk_map: Res<ChunkMap>,
+    all_chunks_query: Query<&Chunk>,
 )
 {
     use std::collections::HashSet;
@@ -997,8 +1123,11 @@ fn remesh_changed_chunks(
             }
         }
 
+        // Get neighboring chunks data.
+        let neighbor_data = get_neighbor_chunk_data(chunk.pos, &chunk_map, &all_chunks_query);
+
         // Build the new meshes for the chunk, one per texture.
-        let meshes_by_tex = mesh_chunk(chunk, &*block_list);
+        let meshes_by_tex = mesh_chunk(chunk, &*block_list, &neighbor_data);
 
         // Spawn one child per (texture, mesh).
         commands.entity(chunk_entity).with_children(|parent| {
