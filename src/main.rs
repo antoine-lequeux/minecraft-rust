@@ -23,6 +23,9 @@ const TOTAL: usize = (CHUNK_SIZE as usize).pow(2) * CHUNK_HEIGHT as usize;
 // How many chunks should be loaded in each direction.
 const RENDER_DISTANCE: i32 = 32;
 
+// How many chunk loading tasks can be running at the same time.
+const MAX_CONCURRENT_LOADS: usize = 16;
+
 // Block types are hard-coded but should be loaded from a file later.
 #[repr(u16)]
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
@@ -378,7 +381,7 @@ fn manage_chunk_loading(
     };
 
     // Camera FOV and culling parameters.
-    let fov_cos = (220.0f32.to_radians() / 2.0).cos();
+    let fov_cos = (120.0f32.to_radians() / 2.0).cos();
     let max_dist = (RENDER_DISTANCE as f32 + 0.5) * CHUNK_SIZE as f32;
 
     let cam_forward_xz = {
@@ -439,6 +442,22 @@ fn manage_chunk_loading(
         }
     }
 
+    // Sort desired chunks by distance from player for priority loading.
+    // Closer chunks will be loaded first.
+    desired.sort_by(|a, b| {
+        let dist_a = sqrt(
+            ((a.x - player_chunk.x) * (a.x - player_chunk.x)
+                + (a.y - player_chunk.y) * (a.y - player_chunk.y)) as f32,
+        );
+        let dist_b = sqrt(
+            ((b.x - player_chunk.x) * (b.x - player_chunk.x)
+                + (b.y - player_chunk.y) * (b.y - player_chunk.y)) as f32,
+        );
+        dist_a
+            .partial_cmp(&dist_b)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
     // Chunks that are currenlty loaded but are not wanted will be unloaded.
     for old_pos in chunk_map.loaded_chunks.keys().cloned().collect::<Vec<_>>()
     {
@@ -463,6 +482,13 @@ fn manage_chunk_loading(
             // Already loaded or being loaded.
             continue;
         }
+
+        // Limit the number of concurrent loading tasks to prioritize closer chunks.
+        if chunk_state.tasks.len() >= MAX_CONCURRENT_LOADS
+        {
+            break;
+        }
+
         // Spawn async task to generate the chunk.
         let seed = map.seed;
         let modifications = map.modified.get(&pos).cloned().unwrap_or_default();
