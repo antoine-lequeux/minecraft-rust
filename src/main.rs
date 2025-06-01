@@ -32,6 +32,11 @@ enum BlockType
     Grass,
     Dirt,
     Stone,
+    Sand,
+    Clay,
+    Gravel,
+    OakLog,
+    OakLeaves,
 }
 
 // A block has a set of 6 textures, one per face. Later, it could have more
@@ -40,6 +45,7 @@ enum BlockType
 pub struct Block
 {
     faces: [Handle<Image>; 6],
+    transparent: bool,
 }
 
 // A simple way to associate blocks to chunks without copying each fields.
@@ -143,6 +149,7 @@ fn load_block_types(mut list: ResMut<BlockList>, textures: Res<TextureHandles>)
                 Handle::default(), // +Z
                 Handle::default(), // -Z
             ],
+            transparent: true,
         },
     );
 
@@ -157,6 +164,7 @@ fn load_block_types(mut list: ResMut<BlockList>, textures: Res<TextureHandles>)
                 textures.grass_side.clone(), // +Z
                 textures.grass_side.clone(), // -Z
             ],
+            transparent: false,
         },
     );
 
@@ -171,6 +179,7 @@ fn load_block_types(mut list: ResMut<BlockList>, textures: Res<TextureHandles>)
                 textures.dirt.clone(), // +Z
                 textures.dirt.clone(), // -Z
             ],
+            transparent: false,
         },
     );
 
@@ -185,6 +194,82 @@ fn load_block_types(mut list: ResMut<BlockList>, textures: Res<TextureHandles>)
                 textures.stone.clone(), // +Z
                 textures.stone.clone(), // -Z
             ],
+            transparent: false,
+        },
+    );
+
+    list.data.insert(
+        BlockType::Sand,
+        Block {
+            faces: [
+                textures.sand.clone(), // +X
+                textures.sand.clone(), // -X
+                textures.sand.clone(), // +Y (top)
+                textures.sand.clone(), // -Y (bottom)
+                textures.sand.clone(), // +Z
+                textures.sand.clone(), // -Z
+            ],
+            transparent: false,
+        },
+    );
+
+    list.data.insert(
+        BlockType::Clay,
+        Block {
+            faces: [
+                textures.clay.clone(), // +X
+                textures.clay.clone(), // -X
+                textures.clay.clone(), // +Y (top)
+                textures.clay.clone(), // -Y (bottom)
+                textures.clay.clone(), // +Z
+                textures.clay.clone(), // -Z
+            ],
+            transparent: false,
+        },
+    );
+
+    list.data.insert(
+        BlockType::Gravel,
+        Block {
+            faces: [
+                textures.gravel.clone(), // +X
+                textures.gravel.clone(), // -X
+                textures.gravel.clone(), // +Y (top)
+                textures.gravel.clone(), // -Y (bottom)
+                textures.gravel.clone(), // +Z
+                textures.gravel.clone(), // -Z
+            ],
+            transparent: false,
+        },
+    );
+
+    list.data.insert(
+        BlockType::OakLog,
+        Block {
+            faces: [
+                textures.oak_log_outside.clone(), // +X
+                textures.oak_log_outside.clone(), // -X
+                textures.oak_log_inside.clone(),  // +Y (top)
+                textures.oak_log_inside.clone(),  // -Y (bottom)
+                textures.oak_log_outside.clone(), // +Z
+                textures.oak_log_outside.clone(), // -Z
+            ],
+            transparent: false,
+        },
+    );
+
+    list.data.insert(
+        BlockType::OakLeaves,
+        Block {
+            faces: [
+                textures.oak_leaves.clone(), // +X
+                textures.oak_leaves.clone(), // -X
+                textures.oak_leaves.clone(), // +Y (top)
+                textures.oak_leaves.clone(), // -Y (bottom)
+                textures.oak_leaves.clone(), // +Z
+                textures.oak_leaves.clone(), // -Z
+            ],
+            transparent: true,
         },
     );
 }
@@ -454,8 +539,8 @@ fn mesh_chunk(
     let cs_i32 = CHUNK_SIZE as i32;
     let ch_i32 = CHUNK_HEIGHT as i32;
 
-    // Helper closure to check if a block is solid at the given coordinates.
-    let is_solid = |mut req_x: i32, req_y: i32, mut req_z: i32| -> bool {
+    // Helper closure to check if a block is opaque at the given coordinates.
+    let is_opaque = |mut req_x: i32, req_y: i32, mut req_z: i32| -> bool {
         if !(0 .. ch_i32).contains(&req_y)
         {
             // If the y coordinate is below 0 or above the chunk height, it's not part of
@@ -506,7 +591,10 @@ fn mesh_chunk(
         {
             // req_x, req_y, req_z are now local to selected_chunk.
             let idx = (req_y as usize) * cs * cs + (req_z as usize) * cs + (req_x as usize);
-            return selected_chunk.blocks[idx] != BlockType::Air;
+            return block_list
+                .data
+                .get(&selected_chunk.blocks[idx])
+                .map_or(false, |block| !block.transparent);
         }
 
         // If the neighbor chunk is not loaded yet, we assume the block is solid to hide
@@ -540,7 +628,7 @@ fn mesh_chunk(
                     let neighbor_check_z = z_local as i32 + dir.z;
 
                     // Only add the face if the neighbor in that direction is air.
-                    if is_solid(neighbor_check_x, neighbor_check_y, neighbor_check_z)
+                    if is_opaque(neighbor_check_x, neighbor_check_y, neighbor_check_z)
                     {
                         continue;
                     }
@@ -764,6 +852,12 @@ struct TextureHandles
     grass_top: Handle<Image>,
     dirt: Handle<Image>,
     stone: Handle<Image>,
+    sand: Handle<Image>,
+    clay: Handle<Image>,
+    gravel: Handle<Image>,
+    oak_log_inside: Handle<Image>,
+    oak_log_outside: Handle<Image>,
+    oak_leaves: Handle<Image>,
 }
 
 // The setup system creates some global features.
@@ -779,6 +873,12 @@ fn setup(
         grass_top: assets.load("textures/grass_top.png"),
         dirt: assets.load("textures/dirt.png"),
         stone: assets.load("textures/stone.png"),
+        sand: assets.load("textures/sand.png"),
+        clay: assets.load("textures/clay.png"),
+        gravel: assets.load("textures/gravel.png"),
+        oak_log_inside: assets.load("textures/oak_log_inside.png"),
+        oak_log_outside: assets.load("textures/oak_log_outside.png"),
+        oak_leaves: assets.load("textures/oak_leaves.png"),
     });
 
     // Blue sky.
@@ -1064,12 +1164,12 @@ fn block_interaction(
                                         + (last_lx as usize);
 
                                     // Place the block at the last air position.
-                                    target_chunk.blocks[last_idx] = BlockType::Grass;
+                                    target_chunk.blocks[last_idx] = BlockType::OakLeaves;
 
-                                    map.modified
-                                        .entry(cpos)
-                                        .or_default()
-                                        .push(Modification { index: idx, new: BlockType::Grass });
+                                    map.modified.entry(cpos).or_default().push(Modification {
+                                        index: last_idx,
+                                        new: BlockType::OakLeaves,
+                                    });
                                 }
                             }
                             return;
