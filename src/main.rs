@@ -16,7 +16,7 @@ fn main()
     ));
 
     app.init_resource::<BlockList>();
-    app.init_resource::<Map>();
+    app.insert_resource(Map::new(0xDF1A5B2E));
     app.init_resource::<ChunkMap>();
     app.init_resource::<ChunkLoadState>();
     app.init_resource::<ChunkMeshState>();
@@ -73,7 +73,7 @@ fn setup(
     commands.spawn((
         Camera3d::default(),
         Transform::from_xyz(30.0, 100.0, 80.0).looking_at(Vec3::ZERO, Vec3::Y),
-        FlyCam { speed: 12.0, sprint_mult: 2.0, sensitivity: 0.002, yaw: 0.0, pitch: 0.0 },
+        FlyCam { speed: 12.0, sprint_mult: 20.0, sensitivity: 0.002, yaw: 0.0, pitch: 0.0 },
         Camera { order: 0, ..default() },
         DistanceFog {
             color: Color::srgb(0.53, 0.81, 0.92),
