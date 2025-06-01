@@ -1,0 +1,280 @@
+use std::collections::HashMap;
+
+use bevy::{
+    asset::RenderAssetUsages,
+    prelude::*,
+    render::mesh::{Indices, PrimitiveTopology},
+};
+
+use crate::{
+    blocks::BlockList,
+    chunks::Chunk,
+    types::{BlockType, CHUNK_HEIGHT, CHUNK_SIZE, ChunkPos},
+};
+
+// The faces of each block, used for mesh generation.
+pub const FACES: &[(IVec3, [[f32; 3]; 4], [[f32; 2]; 4])] = &[
+    // +X
+    (
+        IVec3::new(1, 0, 0),
+        [[1., 0., 0.], [1., 1., 0.], [1., 1., 1.], [1., 0., 1.]],
+        [[0., 1.], [0., 0.], [1., 0.], [1., 1.]],
+    ),
+    // -X
+    (
+        IVec3::new(-1, 0, 0),
+        [[0., 0., 1.], [0., 1., 1.], [0., 1., 0.], [0., 0., 0.]],
+        [[0., 1.], [0., 0.], [1., 0.], [1., 1.]],
+    ),
+    // +Y (top)
+    (
+        IVec3::new(0, 1, 0),
+        [[0., 1., 0.], [0., 1., 1.], [1., 1., 1.], [1., 1., 0.]],
+        [[0., 1.], [0., 0.], [1., 0.], [1., 1.]],
+    ),
+    // -Y (bottom)
+    (
+        IVec3::new(0, -1, 0),
+        [[0., 0., 1.], [0., 0., 0.], [1., 0., 0.], [1., 0., 1.]],
+        [[0., 1.], [0., 0.], [1., 0.], [1., 1.]],
+    ),
+    // +Z
+    (
+        IVec3::new(0, 0, 1),
+        [[1., 0., 1.], [1., 1., 1.], [0., 1., 1.], [0., 0., 1.]],
+        [[0., 1.], [0., 0.], [1., 0.], [1., 1.]],
+    ),
+    // -Z
+    (
+        IVec3::new(0, 0, -1),
+        [[0., 0., 0.], [0., 1., 0.], [1., 1., 0.], [1., 0., 0.]],
+        [[0., 1.], [0., 0.], [1., 0.], [1., 1.]],
+    ),
+];
+
+// It would be too costly to create one mesh per block.
+// With a render distance of 16 chunks, more that 70 million blocks could be
+// loaded. Instead, we will create one mesh per chunk, and display only the
+// exposed faces of this mesh.
+pub fn mesh_chunk(
+    chunk: &Chunk,
+    block_list: &BlockList,
+    neighbor_chunks: &HashMap<ChunkPos, Chunk>,
+) -> HashMap<Handle<Image>, Mesh>
+{
+    // For each texture, we store positions, normals, UVs and indices.
+    let mut per_tex: HashMap<
+        Handle<Image>,
+        (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>),
+    > = HashMap::new();
+
+    let cs = CHUNK_SIZE as usize;
+    let ch = CHUNK_HEIGHT as usize;
+    let cs_i32 = CHUNK_SIZE as i32;
+    let ch_i32 = CHUNK_HEIGHT as i32;
+
+    // Helper closure to check if a block is opaque at the given coordinates.
+    let is_opaque = |mut req_x: i32, req_y: i32, mut req_z: i32| -> bool {
+        if !(0 .. ch_i32).contains(&req_y)
+        {
+            // If the y coordinate is below 0 or above the chunk height, it's not part of
+            // the world.
+            return false;
+        }
+
+        // Get the chunk in which the block is located.
+        let mut target_chunk_pos = chunk.pos;
+
+        // Determine if we need to look in a neighbor chunk based on x coordinate.
+        if req_x < 0
+        {
+            target_chunk_pos.x -= 1;
+            req_x += cs_i32;
+        }
+        else if req_x >= cs_i32
+        {
+            target_chunk_pos.x += 1;
+            req_x -= cs_i32;
+        }
+
+        // Determine if we need to look in a neighbor chunk based on z coordinate.
+        // Note: ChunkPos.y stores the world's Z coordinate for the chunk.
+        if req_z < 0
+        {
+            target_chunk_pos.y -= 1;
+            req_z += cs_i32;
+        }
+        else if req_z >= cs_i32
+        {
+            target_chunk_pos.y += 1;
+            req_z -= cs_i32;
+        }
+
+        let chunk_data_to_use = if target_chunk_pos == chunk.pos
+        {
+            // Use the main chunk passed to mesh_chunk.
+            Some(chunk)
+        }
+        else
+        {
+            // Get the chunk data from the neighbor_chunks map.
+            neighbor_chunks.get(&target_chunk_pos) // Look up in the passed neighbor_chunks map
+        };
+
+        if let Some(selected_chunk) = chunk_data_to_use
+        {
+            // req_x, req_y, req_z are now local to selected_chunk.
+            let idx = (req_y as usize) * cs * cs + (req_z as usize) * cs + (req_x as usize);
+            return block_list
+                .data
+                .get(&selected_chunk.blocks[idx])
+                .map_or(false, |block| !block.transparent);
+        }
+
+        // If the neighbor chunk is not loaded yet, we assume the block is solid to hide
+        // the face. This is a behaviour that will need to be fixed later.
+        true
+    };
+
+    // Iterate over all blocks in the chunk.
+    for z_local in 0 .. cs
+    {
+        for y_local in 0 .. ch
+        {
+            for x_local in 0 .. cs
+            {
+                // Get the block type at this position.
+                let b = chunk.blocks[y_local * cs * cs + z_local * cs + x_local];
+                if b == BlockType::Air
+                {
+                    // Skip air blocks.
+                    continue;
+                }
+                // Get the texture handles for each face of this block.
+                let face_tex = &block_list.data[&b].faces;
+
+                // Iterate over each face (+X, -X, +Y, -Y, +Z, -Z).
+                for (face_idx, &(dir, verts, base_uvs)) in FACES.iter().enumerate()
+                {
+                    // Determine the coordinates of the block to check in the neighboring space.
+                    let neighbor_check_x = x_local as i32 + dir.x;
+                    let neighbor_check_y = y_local as i32 + dir.y;
+                    let neighbor_check_z = z_local as i32 + dir.z;
+
+                    // Only add the face if the neighbor in that direction is air.
+                    if is_opaque(neighbor_check_x, neighbor_check_y, neighbor_check_z)
+                    {
+                        continue;
+                    }
+
+                    // Get the texture for this face.
+                    let tex = &face_tex[face_idx];
+
+                    // Get or create the mesh data for this texture.
+                    let entry = per_tex.entry(tex.clone()).or_default();
+                    let base_index = entry.0.len() as u32;
+
+                    // Add the 4 vertices for this face.
+                    for i in 0 .. 4
+                    {
+                        entry.0.push([
+                            x_local as f32 + verts[i][0],
+                            y_local as f32 + verts[i][1],
+                            z_local as f32 + verts[i][2],
+                        ]);
+                        entry.1.push([dir.x as f32, dir.y as f32, dir.z as f32]);
+                        entry.2.push(base_uvs[i]);
+                    }
+
+                    // Add the two triangles (6 indices) for this face.
+                    entry.3.extend_from_slice(&[
+                        base_index,
+                        base_index + 1,
+                        base_index + 2,
+                        base_index,
+                        base_index + 2,
+                        base_index + 3,
+                    ]);
+                }
+            }
+        }
+    }
+
+    // Convert the per-texture mesh data into actual Mesh objects.
+    per_tex
+        .into_iter()
+        .map(|(tex, (pos, norm, uv, idx))| {
+            let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, norm);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+            mesh.insert_indices(Indices::U32(idx));
+            (tex, mesh)
+        })
+        .collect()
+}
+
+// This system remeshes chunks that have changed since the last frame.
+pub fn remesh_changed_chunks(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    block_list: Res<BlockList>,
+    query: Query<(Entity, &Chunk, Option<&Children>), Changed<Chunk>>,
+    new_chunks: Query<Entity, Added<Chunk>>,
+    chunk_map: Res<crate::world::ChunkMap>,
+    all_chunks_query: Query<&Chunk>,
+)
+{
+    use std::collections::HashSet;
+
+    // We only want to remesh chunks that were changed in this frame.
+    let just_added: HashSet<_> = new_chunks.iter().collect();
+
+    for (chunk_entity, chunk, children_opt) in &query
+    {
+        if just_added.contains(&chunk_entity)
+        {
+            // This chunk was just added, so we don't need to remesh it.
+            continue;
+        }
+
+        // If the chunk has children, we need to despawn them.
+        if let Some(children) = children_opt
+        {
+            for &child in children
+            {
+                commands.entity(child).despawn();
+            }
+        }
+
+        // Get neighboring chunks data.
+        let neighbor_data =
+            crate::world::get_neighbor_chunk_data(chunk.pos, &chunk_map, &all_chunks_query);
+
+        // Build the new meshes for the chunk, one per texture.
+        let meshes_by_tex = mesh_chunk(chunk, &*block_list, &neighbor_data);
+
+        // Spawn one child per (texture, mesh).
+        commands.entity(chunk_entity).with_children(|parent| {
+            for (tex_handle, mesh) in meshes_by_tex
+            {
+                let mesh_handle = meshes.add(mesh);
+
+                // Standard material.
+                let mat_handle = materials.add(StandardMaterial {
+                    base_color_texture: Some(tex_handle.clone()),
+                    alpha_mode: AlphaMode::Mask(0.5), // keep cut-out alpha
+                    ..default()
+                });
+
+                // Spawn the mesh.
+                parent.spawn((
+                    Mesh3d(mesh_handle),
+                    MeshMaterial3d(mat_handle),
+                    Visibility::default(),
+                ));
+            }
+        });
+    }
+}
