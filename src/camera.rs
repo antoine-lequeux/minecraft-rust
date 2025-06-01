@@ -219,11 +219,11 @@ pub fn block_interaction(
                                         + (last_lx as usize);
 
                                     // Place the block at the last air position.
-                                    target_chunk.blocks[last_idx] = BlockType::OakLeaves;
+                                    target_chunk.blocks[last_idx] = BlockType::Water;
 
                                     map.modified.entry(cpos).or_default().push(Modification {
                                         index: last_idx,
-                                        new: BlockType::OakLeaves,
+                                        new: BlockType::Water,
                                     });
                                 }
                             }

@@ -34,6 +34,7 @@ pub struct TextureHandles
     pub oak_log_inside: Handle<Image>,
     pub oak_log_outside: Handle<Image>,
     pub oak_leaves: Handle<Image>,
+    pub water: Handle<Image>,
 }
 
 // This system is called when the game launches. The data is hard-coded but
@@ -172,6 +173,22 @@ pub fn load_block_types(mut list: ResMut<BlockList>, textures: Res<TextureHandle
                 textures.oak_leaves.clone(), // -Z
             ],
             transparent: true,
+        },
+    );
+
+    // Fake water texture.
+    list.data.insert(
+        BlockType::Water,
+        Block {
+            faces: [
+                textures.water.clone(), // +X
+                textures.water.clone(), // -X
+                textures.water.clone(), // +Y (top)
+                textures.water.clone(), // -Y (bottom)
+                textures.water.clone(), // +Z
+                textures.water.clone(), // -Z
+            ],
+            transparent: false,
         },
     );
 }

@@ -1,7 +1,5 @@
 - Optimize chunk meshing so that invisible faces are not rendered (even when they are hidden by another chunk)
 
-- Add other block types (sand, gravel, clay, log, leaves, stone types...)
-
 - Add water (apply a shader when the player is underwater)
 
 - Add procedural terrain generation (test different algorithms, use the world seed)

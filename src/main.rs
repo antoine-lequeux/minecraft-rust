@@ -56,6 +56,7 @@ fn setup(
         oak_log_inside: assets.load("textures/oak_log_inside.png"),
         oak_log_outside: assets.load("textures/oak_log_outside.png"),
         oak_leaves: assets.load("textures/oak_leaves.png"),
+        water: assets.load("textures/water.png"),
     });
 
     // Blue sky.

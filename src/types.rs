@@ -25,6 +25,7 @@ pub enum BlockType
     Gravel,
     OakLog,
     OakLeaves,
+    Water,
 }
 
 // A struct representing the horizontal position of a chunk. It can serve as an
