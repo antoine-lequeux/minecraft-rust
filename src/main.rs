@@ -1,7 +1,7 @@
 use bevy::{
     diagnostic::FrameTimeDiagnosticsPlugin,
     prelude::*,
-    window::{CursorGrabMode, PrimaryWindow},
+    window::{CursorGrabMode, WindowResolution},
 };
 use minecraft::*;
 
@@ -38,11 +38,7 @@ fn main()
 }
 
 // The setup system creates some global features.
-fn setup(
-    mut commands: Commands,
-    mut windows: Query<&mut Window, With<PrimaryWindow>>,
-    assets: Res<AssetServer>,
-)
+fn setup(mut commands: Commands, mut window: Single<&mut Window>, assets: Res<AssetServer>)
 {
     // Load block textures.
     commands.insert_resource(TextureHandles {
@@ -100,9 +96,9 @@ fn setup(
     setup_ui(commands, assets);
 
     // Lock cursor position.
-    for mut window in windows.iter_mut()
-    {
-        window.cursor_options.visible = false;
-        window.cursor_options.grab_mode = CursorGrabMode::Locked;
-    }
+    window.cursor_options.visible = false;
+    window.cursor_options.grab_mode = CursorGrabMode::Locked;
+
+    // Set the window resolution.
+    window.resolution = WindowResolution::new(1280.0, 720.0);
 }
