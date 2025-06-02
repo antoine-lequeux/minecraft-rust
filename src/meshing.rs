@@ -7,9 +7,9 @@ use bevy::{
 };
 
 use crate::{
-    ChunkFace, Map,
+    ChunkFace, Map, Modification,
     blocks::BlockList,
-    chunks::Chunk,
+    chunks::{Chunk, apply_modifications, load_chunk_face},
     types::{BlockType, CHUNK_HEIGHT, CHUNK_SIZE, ChunkPos},
 };
 
@@ -62,6 +62,7 @@ pub fn mesh_chunk(
     block_list: &BlockList,
     neighbor_chunks: &HashMap<ChunkPos, Chunk>,
     seed: u64,
+    modifications: &std::collections::HashMap<ChunkPos, Vec<Modification>>,
 ) -> HashMap<Handle<Image>, Mesh>
 {
     // For each texture, we store positions, normals, UVs and indices.
@@ -91,6 +92,7 @@ pub fn mesh_chunk(
         cs_i32: i32,
         ch_i32: i32,
         face_cache: &mut HashMap<(ChunkPos, ChunkFace), Chunk>,
+        modifications: &std::collections::HashMap<ChunkPos, Vec<Modification>>,
     ) -> bool
     {
         if !(0 .. ch_i32).contains(&req_y)
@@ -151,8 +153,13 @@ pub fn mesh_chunk(
             // If the face is already cached, we use it.
             let cache_key = (target_chunk_pos, face_name);
             let temp_chunk = face_cache.entry(cache_key).or_insert_with(|| {
-                use crate::chunks::load_chunk_face;
-                load_chunk_face(seed, target_chunk_pos, face_name)
+                let mut chunk_face = load_chunk_face(seed, target_chunk_pos, face_name);
+                // If there are modifications for this chunk, apply them.
+                if let Some(mods) = modifications.get(&target_chunk_pos)
+                {
+                    apply_modifications(&mut chunk_face, mods);
+                }
+                chunk_face
             });
             // Check the block type at the requested coordinates in the cached chunk.
             let idx = (req_y as usize) * cs * cs + (req_z as usize) * cs + (req_x as usize);
@@ -202,6 +209,7 @@ pub fn mesh_chunk(
                         cs_i32,
                         ch_i32,
                         &mut face_cache,
+                        modifications,
                     )
                     {
                         continue;
@@ -294,7 +302,8 @@ pub fn remesh_changed_chunks(
             crate::world::get_neighbor_chunk_data(chunk.pos, &chunk_map, &all_chunks_query);
 
         // Build the new meshes for the chunk, one per texture.
-        let meshes_by_tex = mesh_chunk(chunk, &*block_list, &neighbor_data, map.seed);
+        let meshes_by_tex =
+            mesh_chunk(chunk, &*block_list, &neighbor_data, map.seed, &map.modified);
 
         // Spawn one child per (texture, mesh).
         commands.entity(chunk_entity).with_children(|parent| {

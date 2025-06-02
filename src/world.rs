@@ -251,14 +251,20 @@ pub fn process_chunk_tasks(
             let block_list = block_list.clone();
             let task_pool = AsyncComputeTaskPool::get();
             let seed_copy = map.seed;
+            let modifs_copy = map.modified.clone();
 
             // Prepare neighbor data for mesh_chunk.
             let neighbor_chunks_data =
                 get_neighbor_chunk_data(chunk_pos, &chunk_map, &all_chunks_query);
 
             let mesh_task = task_pool.spawn(async move {
-                let meshes_by_tex =
-                    mesh_chunk(&chunk_clone, &block_list, &neighbor_chunks_data, seed_copy);
+                let meshes_by_tex = mesh_chunk(
+                    &chunk_clone,
+                    &block_list,
+                    &neighbor_chunks_data,
+                    seed_copy,
+                    &modifs_copy,
+                );
                 (chunk_pos_copy, meshes_by_tex)
             });
             mesh_state.tasks.insert(chunk_pos, mesh_task);
