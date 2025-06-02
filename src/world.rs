@@ -218,6 +218,7 @@ pub fn process_chunk_tasks(
     mut chunk_map: ResMut<ChunkMap>,
     mut chunk_state: ResMut<ChunkLoadState>,
     mut mesh_state: ResMut<ChunkMeshState>,
+    map: Res<Map>,
     block_list: Res<BlockList>,
     all_chunks_query: Query<&Chunk>,
 )
@@ -249,13 +250,15 @@ pub fn process_chunk_tasks(
             let chunk_pos_copy = chunk_pos;
             let block_list = block_list.clone();
             let task_pool = AsyncComputeTaskPool::get();
+            let seed_copy = map.seed;
 
             // Prepare neighbor data for mesh_chunk.
             let neighbor_chunks_data =
                 get_neighbor_chunk_data(chunk_pos, &chunk_map, &all_chunks_query);
 
             let mesh_task = task_pool.spawn(async move {
-                let meshes_by_tex = mesh_chunk(&chunk_clone, &block_list, &neighbor_chunks_data);
+                let meshes_by_tex =
+                    mesh_chunk(&chunk_clone, &block_list, &neighbor_chunks_data, seed_copy);
                 (chunk_pos_copy, meshes_by_tex)
             });
             mesh_state.tasks.insert(chunk_pos, mesh_task);

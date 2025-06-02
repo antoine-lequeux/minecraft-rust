@@ -7,6 +7,7 @@ use bevy::{
 };
 
 use crate::{
+    ChunkFace, Map,
     blocks::BlockList,
     chunks::Chunk,
     types::{BlockType, CHUNK_HEIGHT, CHUNK_SIZE, ChunkPos},
@@ -60,6 +61,7 @@ pub fn mesh_chunk(
     chunk: &Chunk,
     block_list: &BlockList,
     neighbor_chunks: &HashMap<ChunkPos, Chunk>,
+    seed: u64,
 ) -> HashMap<Handle<Image>, Mesh>
 {
     // For each texture, we store positions, normals, UVs and indices.
@@ -73,68 +75,94 @@ pub fn mesh_chunk(
     let cs_i32 = CHUNK_SIZE as i32;
     let ch_i32 = CHUNK_HEIGHT as i32;
 
-    // Helper closure to check if a block is opaque at the given coordinates.
-    let is_opaque = |mut req_x: i32, req_y: i32, mut req_z: i32| -> bool {
+    // Cache for generated chunk faces: (ChunkPos, face) -> Chunk.
+    let mut face_cache: HashMap<(ChunkPos, ChunkFace), Chunk> = HashMap::new();
+
+    // Helper function to check if a block is opaque at the given coordinates.
+    fn is_opaque(
+        req_x: i32,
+        req_y: i32,
+        req_z: i32,
+        chunk: &Chunk,
+        block_list: &BlockList,
+        neighbor_chunks: &HashMap<ChunkPos, Chunk>,
+        seed: u64,
+        cs: usize,
+        cs_i32: i32,
+        ch_i32: i32,
+        face_cache: &mut HashMap<(ChunkPos, ChunkFace), Chunk>,
+    ) -> bool
+    {
         if !(0 .. ch_i32).contains(&req_y)
         {
             // If the y coordinate is below 0 or above the chunk height, it's not part of
             // the world.
             return false;
         }
-
         // Get the chunk in which the block is located.
         let mut target_chunk_pos = chunk.pos;
-
         // Determine if we need to look in a neighbor chunk based on x coordinate.
+        let mut face: Option<ChunkFace> = None;
+        let mut req_x = req_x;
+        let mut req_z = req_z;
         if req_x < 0
         {
             target_chunk_pos.x -= 1;
             req_x += cs_i32;
+            face = Some(ChunkFace::East);
         }
         else if req_x >= cs_i32
         {
             target_chunk_pos.x += 1;
             req_x -= cs_i32;
+            face = Some(ChunkFace::West);
         }
-
-        // Determine if we need to look in a neighbor chunk based on z coordinate.
-        // Note: ChunkPos.y stores the world's Z coordinate for the chunk.
         if req_z < 0
         {
             target_chunk_pos.y -= 1;
             req_z += cs_i32;
+            face = Some(ChunkFace::South);
         }
         else if req_z >= cs_i32
         {
             target_chunk_pos.y += 1;
             req_z -= cs_i32;
+            face = Some(ChunkFace::North);
         }
-
         let chunk_data_to_use = if target_chunk_pos == chunk.pos
         {
-            // Use the main chunk passed to mesh_chunk.
             Some(chunk)
         }
         else
         {
-            // Get the chunk data from the neighbor_chunks map.
-            neighbor_chunks.get(&target_chunk_pos) // Look up in the passed neighbor_chunks map
+            neighbor_chunks.get(&target_chunk_pos)
         };
-
         if let Some(selected_chunk) = chunk_data_to_use
         {
-            // req_x, req_y, req_z are now local to selected_chunk.
             let idx = (req_y as usize) * cs * cs + (req_z as usize) * cs + (req_x as usize);
             return block_list
                 .data
                 .get(&selected_chunk.blocks[idx])
                 .map_or(false, |block| !block.transparent);
         }
-
-        // If the neighbor chunk is not loaded yet, we assume the block is solid to hide
-        // the face. This is a behaviour that will need to be fixed later.
-        true
-    };
+        // If the neighbor chunk is not loaded yet, we generate the useful face.
+        if let Some(face_name) = face
+        {
+            // If the face is already cached, we use it.
+            let cache_key = (target_chunk_pos, face_name);
+            let temp_chunk = face_cache.entry(cache_key).or_insert_with(|| {
+                use crate::chunks::load_chunk_face;
+                load_chunk_face(seed, target_chunk_pos, face_name)
+            });
+            // Check the block type at the requested coordinates in the cached chunk.
+            let idx = (req_y as usize) * cs * cs + (req_z as usize) * cs + (req_x as usize);
+            return block_list
+                .data
+                .get(&temp_chunk.blocks[idx])
+                .map_or(false, |block| !block.transparent);
+        }
+        return true;
+    }
 
     // Iterate over all blocks in the chunk.
     for z_local in 0 .. cs
@@ -162,7 +190,19 @@ pub fn mesh_chunk(
                     let neighbor_check_z = z_local as i32 + dir.z;
 
                     // Only add the face if the neighbor in that direction is air.
-                    if is_opaque(neighbor_check_x, neighbor_check_y, neighbor_check_z)
+                    if is_opaque(
+                        neighbor_check_x,
+                        neighbor_check_y,
+                        neighbor_check_z,
+                        chunk,
+                        block_list,
+                        neighbor_chunks,
+                        seed,
+                        cs,
+                        cs_i32,
+                        ch_i32,
+                        &mut face_cache,
+                    )
                     {
                         continue;
                     }
@@ -219,6 +259,7 @@ pub fn remesh_changed_chunks(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    map: Res<Map>,
     block_list: Res<BlockList>,
     query: Query<(Entity, &Chunk, Option<&Children>), Changed<Chunk>>,
     new_chunks: Query<Entity, Added<Chunk>>,
@@ -253,7 +294,7 @@ pub fn remesh_changed_chunks(
             crate::world::get_neighbor_chunk_data(chunk.pos, &chunk_map, &all_chunks_query);
 
         // Build the new meshes for the chunk, one per texture.
-        let meshes_by_tex = mesh_chunk(chunk, &*block_list, &neighbor_data);
+        let meshes_by_tex = mesh_chunk(chunk, &*block_list, &neighbor_data, map.seed);
 
         // Spawn one child per (texture, mesh).
         commands.entity(chunk_entity).with_children(|parent| {
