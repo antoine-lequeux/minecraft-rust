@@ -28,7 +28,10 @@ fn main()
     app.add_systems(Update, fly_camera_movement);
     // app.add_systems(Update, count_chunks);
     app.add_systems(Update, mouse_look);
-    app.add_systems(Update, (block_interaction, remesh_changed_chunks).chain());
+    app.add_systems(
+        Update,
+        (block_interaction, trigger_chunk_remeshing, remesh_changed_chunks).chain(),
+    );
 
     app.add_systems(Update, text_update_system);
 

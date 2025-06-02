@@ -328,3 +328,53 @@ pub fn remesh_changed_chunks(
         });
     }
 }
+
+// This system triggers remeshing for chunks that have modifications requiring
+// remesh (like when adjacent chunks have border blocks modified).
+pub fn trigger_chunk_remeshing(
+    mut map: ResMut<Map>,
+    chunk_map: Res<crate::world::ChunkMap>,
+    mut chunks: Query<&mut Chunk>,
+)
+{
+    let mut chunks_to_clean = Vec::new();
+
+    for (chunk_pos, modifications) in &map.modified
+    {
+        // Check if this chunk has any dummy modifications (used for triggering
+        // remeshing).
+        let has_remesh_trigger = modifications.iter().any(|m| m.index == usize::MAX);
+
+        if has_remesh_trigger
+        {
+            // Find the chunk entity and trigger a change.
+            if let Some(&chunk_entity) = chunk_map.loaded_chunks.get(chunk_pos)
+            {
+                if let Ok(mut chunk) = chunks.get_mut(chunk_entity)
+                {
+                    // Simply touch the chunk to trigger the Change<Chunk> detection.
+                    // We clone the position to force a change without actually changing data.
+                    chunk.pos = chunk.pos;
+                }
+            }
+
+            // Remove the dummy modifications but keep real ones.
+            chunks_to_clean.push(*chunk_pos);
+        }
+    }
+
+    // Clean up dummy modifications.
+    for chunk_pos in chunks_to_clean
+    {
+        if let Some(modifications) = map.modified.get_mut(&chunk_pos)
+        {
+            modifications.retain(|m| m.index != usize::MAX);
+
+            // If no real modifications remain, remove the entry completely.
+            if modifications.is_empty()
+            {
+                map.modified.remove(&chunk_pos);
+            }
+        }
+    }
+}

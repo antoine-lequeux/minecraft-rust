@@ -213,6 +213,11 @@ pub fn apply_modifications(chunk: &mut Chunk, modifications: &[Modification])
 {
     for modification in modifications
     {
+        // Skip dummy modifications used only for triggering remeshing.
+        if modification.index == usize::MAX
+        {
+            continue;
+        }
         chunk.blocks[modification.index] = modification.new;
     }
 }

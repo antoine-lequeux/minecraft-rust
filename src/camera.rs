@@ -6,6 +6,43 @@ use crate::{
     world::ChunkMap,
 };
 
+// Helper function to check if a block position is on a chunk border and return
+// adjacent chunk positions.
+fn get_adjacent_chunks_for_border_block(
+    local_x: i32,
+    local_z: i32,
+    chunk_pos: ChunkPos,
+) -> Vec<ChunkPos>
+{
+    let mut adjacent_chunks = Vec::new();
+    let chunk_size = CHUNK_SIZE as i32;
+
+    // Check if the block is on the border of the chunk.
+    if local_x == 0
+    {
+        // Western border - affects chunk to the west.
+        adjacent_chunks.push(ChunkPos { x: chunk_pos.x - 1, y: chunk_pos.y });
+    }
+    else if local_x == chunk_size - 1
+    {
+        // Eastern border - affects chunk to the east.
+        adjacent_chunks.push(ChunkPos { x: chunk_pos.x + 1, y: chunk_pos.y });
+    }
+
+    if local_z == 0
+    {
+        // Northern border - affects chunk to the north.
+        adjacent_chunks.push(ChunkPos { x: chunk_pos.x, y: chunk_pos.y - 1 });
+    }
+    else if local_z == chunk_size - 1
+    {
+        // Southern border - affects chunk to the south.
+        adjacent_chunks.push(ChunkPos { x: chunk_pos.x, y: chunk_pos.y + 1 });
+    }
+
+    return adjacent_chunks;
+}
+
 // The FlyCam component represents the player camera.
 #[derive(Component)]
 pub struct FlyCam
@@ -194,6 +231,24 @@ pub fn block_interaction(
                                 .entry(cpos)
                                 .or_default()
                                 .push(Modification { index: idx, new: BlockType::Air });
+
+                            // Check if the block is on a chunk border and mark adjacent chunks for
+                            // remeshing.
+                            let adjacent_chunks =
+                                get_adjacent_chunks_for_border_block(lx, lz, cpos);
+                            for adj_chunk_pos in adjacent_chunks
+                            {
+                                if chunk_map.loaded_chunks.contains_key(&adj_chunk_pos)
+                                {
+                                    // Add a dummy modification to trigger remeshing of adjacent
+                                    // chunk.
+                                    // We use an impossible index to indicate this is just for
+                                    // remeshing.
+                                    map.modified.entry(adj_chunk_pos).or_default().push(
+                                        Modification { index: usize::MAX, new: BlockType::Air },
+                                    );
+                                }
+                            }
                             return;
                         }
                         else if request_place && last_air_pos.is_some()
@@ -216,15 +271,37 @@ pub fn block_interaction(
                                         * (CHUNK_SIZE as usize)
                                         * (CHUNK_SIZE as usize)
                                         + (last_lz as usize) * (CHUNK_SIZE as usize)
-                                        + (last_lx as usize);
-
-                                    // Place the block at the last air position.
+                                        + (last_lx as usize); // Place the block at the last air position.
                                     target_chunk.blocks[last_idx] = BlockType::Water;
 
-                                    map.modified.entry(cpos).or_default().push(Modification {
-                                        index: last_idx,
-                                        new: BlockType::Water,
-                                    });
+                                    let target_chunk_pos = ChunkPos { x: last_cx, y: last_cz };
+                                    map.modified.entry(target_chunk_pos).or_default().push(
+                                        Modification { index: last_idx, new: BlockType::Water },
+                                    );
+
+                                    // Check if the block is on a chunk border and mark adjacent
+                                    // chunks for remeshing.
+                                    let adjacent_chunks = get_adjacent_chunks_for_border_block(
+                                        last_lx,
+                                        last_lz,
+                                        target_chunk_pos,
+                                    );
+                                    for adj_chunk_pos in adjacent_chunks
+                                    {
+                                        if chunk_map.loaded_chunks.contains_key(&adj_chunk_pos)
+                                        {
+                                            // Add a dummy modification to trigger remeshing of
+                                            // adjacent chunk.
+                                            // We use an impossible index to indicate this is just
+                                            // for remeshing.
+                                            map.modified.entry(adj_chunk_pos).or_default().push(
+                                                Modification {
+                                                    index: usize::MAX,
+                                                    new: BlockType::Air,
+                                                },
+                                            );
+                                        }
+                                    }
                                 }
                             }
                             return;
