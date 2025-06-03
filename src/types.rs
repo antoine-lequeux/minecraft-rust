@@ -6,10 +6,10 @@ pub const CHUNK_HEIGHT: u16 = 256;
 pub const TOTAL: usize = (CHUNK_SIZE as usize).pow(2) * CHUNK_HEIGHT as usize;
 
 // How many chunks should be loaded in each direction.
-pub const RENDER_DISTANCE: i32 = 32;
+pub const RENDER_DISTANCE: i32 = 64;
 
 // How many chunk loading tasks can be running at the same time.
-pub const MAX_CONCURRENT_LOADS: usize = 16;
+pub const MAX_CONCURRENT_LOADS: usize = 64;
 
 // Block types are hard-coded but should be loaded from a file later.
 #[repr(u16)]
