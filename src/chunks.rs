@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use noise::{Fbm, MultiFractal, NoiseFn, Seedable};
 
-use crate::types::{BlockType, CHUNK_HEIGHT, CHUNK_SIZE, ChunkPos, TOTAL};
+use crate::{
+    blocks::BlockList,
+    types::{BlockType, CHUNK_HEIGHT, CHUNK_SIZE, ChunkPos, TOTAL},
+};
 
 // The Chunk component.
 #[derive(Component, Clone)]
@@ -11,6 +14,8 @@ pub struct Chunk
 {
     pub pos: ChunkPos,
     pub blocks: Box<[BlockType; TOTAL]>,
+    pub min_face_height: usize, // Minimum height where faces could be drawn.
+    pub max_face_height: usize, // Maximum height where faces could be drawn.
 }
 
 // Each chunk is always loaded using the seed, instead of being saved.
@@ -120,7 +125,7 @@ fn generate_column(
 
 // This function generates a chunk using the seed and position.
 // It uses a noise function to generate terrain height, and fills the chunk.
-pub fn load_raw_chunk(seed: u64, pos: ChunkPos) -> Chunk
+pub fn load_raw_chunk(seed: u64, pos: ChunkPos, block_list: &BlockList) -> Chunk
 {
     let mut blocks = [BlockType::Air; TOTAL];
     let mut terrain_heights = [[0_usize; CHUNK_SIZE as usize]; CHUNK_SIZE as usize];
@@ -129,9 +134,7 @@ pub fn load_raw_chunk(seed: u64, pos: ChunkPos) -> Chunk
     let fbm = create_fbm(seed);
 
     // Constants for the noise function.
-    let cs = CHUNK_SIZE as usize;
-
-    // Iterate over the chunk's x and z coordinates.
+    let cs = CHUNK_SIZE as usize; // Iterate over the chunk's x and z coordinates.
     for z in 0 .. cs
     {
         for x in 0 .. cs
@@ -140,7 +143,10 @@ pub fn load_raw_chunk(seed: u64, pos: ChunkPos) -> Chunk
         }
     }
 
-    Chunk { pos, blocks: blocks.into() }
+    // Calculate the min and max face heights.
+    let (min_face_height, max_face_height) = calculate_face_heights(&blocks, block_list);
+
+    Chunk { pos, blocks: blocks.into(), min_face_height, max_face_height }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -153,7 +159,7 @@ pub enum ChunkFace
 }
 
 // Load only a specific face of the chunk.
-pub fn load_chunk_face(seed: u64, pos: ChunkPos, face: ChunkFace) -> Chunk
+pub fn load_chunk_face(seed: u64, pos: ChunkPos, face: ChunkFace, block_list: &BlockList) -> Chunk
 {
     let mut blocks = [BlockType::Air; TOTAL];
     let mut terrain_heights = [[0_usize; CHUNK_SIZE as usize]; CHUNK_SIZE as usize];
@@ -195,7 +201,11 @@ pub fn load_chunk_face(seed: u64, pos: ChunkPos, face: ChunkFace) -> Chunk
             }
         },
     }
-    Chunk { pos, blocks: blocks.into() }
+
+    // Calculate the min and max face heights.
+    let (min_face_height, max_face_height) = calculate_face_heights(&blocks, block_list);
+
+    Chunk { pos, blocks: blocks.into(), min_face_height, max_face_height }
 }
 
 // Helper function to create a noise function for terrain generation.
@@ -208,8 +218,86 @@ fn create_fbm(seed: u64) -> Fbm
         .set_lacunarity(2.0)
 }
 
+// Helper function to calculate the minimal and maximal heights for face
+// drawing.
+fn calculate_face_heights(blocks: &[BlockType; TOTAL], block_list: &BlockList) -> (usize, usize)
+{
+    let cs = CHUNK_SIZE as usize;
+    let cs_sq = cs * cs;
+    let ch = CHUNK_HEIGHT as usize;
+
+    // Find the lowest layer with any non-opaque blocks.
+    let mut min_height = CHUNK_HEIGHT as usize;
+    // Find the highest layer with any opaque blocks.
+    let mut max_height = 0;
+
+    for y in 0 .. (CHUNK_HEIGHT as usize)
+    {
+        let mut has_transparent = false;
+        let mut has_opaque = false;
+
+        // Check all blocks in this layer.
+        for z in 0 .. cs
+        {
+            for x in 0 .. cs
+            {
+                let idx = y * cs_sq + z * cs + x;
+                let block_type = blocks[idx];
+
+                // Use the block's transparency property from BlockList.
+                if let Some(block_data) = block_list.data.get(&block_type)
+                {
+                    if block_data.transparent
+                    {
+                        has_transparent = true;
+                    }
+                    else
+                    {
+                        has_opaque = true;
+                    }
+                }
+
+                // Early exit if we found both types.
+                if has_transparent && has_opaque
+                {
+                    break;
+                }
+            }
+            if has_transparent && has_opaque
+            {
+                break;
+            }
+        }
+
+
+        // Lowest layer with any non-opaque blocks.
+        if min_height == ch && has_transparent
+        {
+            min_height = y;
+        }
+
+        // Highest layer with any opaque blocks.
+        if has_opaque
+        {
+            max_height = y;
+        }
+    }
+
+    // If no transparent blocks found, set min_height to max_height.
+    if min_height == ch
+    {
+        min_height = max_height;
+    }
+
+    (min_height, max_height)
+}
+
 // This function applies any saved modifications to a chunk after it is loaded.
-pub fn apply_modifications(chunk: &mut Chunk, modifications: &[Modification])
+pub fn apply_modifications(
+    chunk: &mut Chunk,
+    modifications: &[Modification],
+    block_list: &BlockList,
+)
 {
     for modification in modifications
     {
@@ -220,6 +308,11 @@ pub fn apply_modifications(chunk: &mut Chunk, modifications: &[Modification])
         }
         chunk.blocks[modification.index] = modification.new;
     }
+
+    // Recalculate face heights after applying modifications
+    let (min_face_height, max_face_height) = calculate_face_heights(&chunk.blocks, block_list);
+    chunk.min_face_height = min_face_height;
+    chunk.max_face_height = max_face_height;
 }
 
 pub fn count_chunks(query: Query<(), With<Chunk>>)

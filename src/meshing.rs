@@ -153,11 +153,11 @@ pub fn mesh_chunk(
             // If the face is already cached, we use it.
             let cache_key = (target_chunk_pos, face_name);
             let temp_chunk = face_cache.entry(cache_key).or_insert_with(|| {
-                let mut chunk_face = load_chunk_face(seed, target_chunk_pos, face_name);
+                let mut chunk_face = load_chunk_face(seed, target_chunk_pos, face_name, block_list);
                 // If there are modifications for this chunk, apply them.
                 if let Some(mods) = modifications.get(&target_chunk_pos)
                 {
-                    apply_modifications(&mut chunk_face, mods);
+                    apply_modifications(&mut chunk_face, mods, block_list);
                 }
                 chunk_face
             });
@@ -171,10 +171,16 @@ pub fn mesh_chunk(
         return true;
     }
 
-    // Iterate over all blocks in the chunk.
+    // Use the chunk's face height bounds to optimize iteration.
+    // The ranges is slightly expanded to ensure we cover the full height of the
+    // faces.
+    let min_y = chunk.min_face_height.saturating_sub(1);
+    let max_y = (chunk.max_face_height + 1).min(ch - 1);
+
+    // Iterate over all blocks in the chunk, but only in the relevant Y range.
     for z_local in 0 .. cs
     {
-        for y_local in 0 .. ch
+        for y_local in min_y ..= max_y
         {
             for x_local in 0 .. cs
             {
