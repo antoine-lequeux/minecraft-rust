@@ -3,10 +3,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use noise::{Fbm, MultiFractal, NoiseFn, Seedable};
 
-use crate::{
-    blocks::BlockList,
-    types::{BlockType, CHUNK_HEIGHT, CHUNK_SIZE, ChunkPos, TOTAL},
-};
+use crate::types::{BlockType, CHUNK_HEIGHT, CHUNK_SIZE, ChunkPos, TOTAL};
 
 // The Chunk component.
 #[derive(Component, Clone)]
@@ -125,7 +122,7 @@ fn generate_column(
 
 // This function generates a chunk using the seed and position.
 // It uses a noise function to generate terrain height, and fills the chunk.
-pub fn load_raw_chunk(seed: u64, pos: ChunkPos, block_list: &BlockList) -> Chunk
+pub fn load_raw_chunk(seed: u64, pos: ChunkPos) -> Chunk
 {
     let mut blocks = [BlockType::Air; TOTAL];
     let mut terrain_heights = [[0_usize; CHUNK_SIZE as usize]; CHUNK_SIZE as usize];
@@ -144,7 +141,7 @@ pub fn load_raw_chunk(seed: u64, pos: ChunkPos, block_list: &BlockList) -> Chunk
     }
 
     // Calculate the min and max face heights.
-    let (min_face_height, max_face_height) = calculate_face_heights(&blocks, block_list);
+    let (min_face_height, max_face_height) = calculate_face_heights(&blocks);
 
     Chunk { pos, blocks: blocks.into(), min_face_height, max_face_height }
 }
@@ -159,7 +156,7 @@ pub enum ChunkFace
 }
 
 // Load only a specific face of the chunk.
-pub fn load_chunk_face(seed: u64, pos: ChunkPos, face: ChunkFace, block_list: &BlockList) -> Chunk
+pub fn load_chunk_face(seed: u64, pos: ChunkPos, face: ChunkFace) -> Chunk
 {
     let mut blocks = [BlockType::Air; TOTAL];
     let mut terrain_heights = [[0_usize; CHUNK_SIZE as usize]; CHUNK_SIZE as usize];
@@ -203,7 +200,7 @@ pub fn load_chunk_face(seed: u64, pos: ChunkPos, face: ChunkFace, block_list: &B
     }
 
     // Calculate the min and max face heights.
-    let (min_face_height, max_face_height) = calculate_face_heights(&blocks, block_list);
+    let (min_face_height, max_face_height) = calculate_face_heights(&blocks);
 
     Chunk { pos, blocks: blocks.into(), min_face_height, max_face_height }
 }
@@ -220,7 +217,7 @@ fn create_fbm(seed: u64) -> Fbm
 
 // Helper function to calculate the minimal and maximal heights for face
 // drawing.
-fn calculate_face_heights(blocks: &[BlockType; TOTAL], block_list: &BlockList) -> (usize, usize)
+pub fn calculate_face_heights(blocks: &[BlockType; TOTAL]) -> (usize, usize)
 {
     let cs = CHUNK_SIZE as usize;
     let cs_sq = cs * cs;
@@ -245,16 +242,13 @@ fn calculate_face_heights(blocks: &[BlockType; TOTAL], block_list: &BlockList) -
                 let block_type = blocks[idx];
 
                 // Use the block's transparency property from BlockList.
-                if let Some(block_data) = block_list.data.get(&block_type)
+                if block_type == BlockType::Air
                 {
-                    if block_data.transparent
-                    {
-                        has_transparent = true;
-                    }
-                    else
-                    {
-                        has_opaque = true;
-                    }
+                    has_transparent = true;
+                }
+                else
+                {
+                    has_opaque = true;
                 }
 
                 // Early exit if we found both types.
@@ -268,7 +262,6 @@ fn calculate_face_heights(blocks: &[BlockType; TOTAL], block_list: &BlockList) -
                 break;
             }
         }
-
 
         // Lowest layer with any non-opaque blocks.
         if min_height == ch && has_transparent
@@ -293,11 +286,7 @@ fn calculate_face_heights(blocks: &[BlockType; TOTAL], block_list: &BlockList) -
 }
 
 // This function applies any saved modifications to a chunk after it is loaded.
-pub fn apply_modifications(
-    chunk: &mut Chunk,
-    modifications: &[Modification],
-    block_list: &BlockList,
-)
+pub fn apply_modifications(chunk: &mut Chunk, modifications: &[Modification])
 {
     for modification in modifications
     {
@@ -310,7 +299,7 @@ pub fn apply_modifications(
     }
 
     // Recalculate face heights after applying modifications
-    let (min_face_height, max_face_height) = calculate_face_heights(&chunk.blocks, block_list);
+    let (min_face_height, max_face_height) = calculate_face_heights(&chunk.blocks);
     chunk.min_face_height = min_face_height;
     chunk.max_face_height = max_face_height;
 }

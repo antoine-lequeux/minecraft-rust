@@ -153,11 +153,11 @@ pub fn mesh_chunk(
             // If the face is already cached, we use it.
             let cache_key = (target_chunk_pos, face_name);
             let temp_chunk = face_cache.entry(cache_key).or_insert_with(|| {
-                let mut chunk_face = load_chunk_face(seed, target_chunk_pos, face_name, block_list);
+                let mut chunk_face = load_chunk_face(seed, target_chunk_pos, face_name);
                 // If there are modifications for this chunk, apply them.
                 if let Some(mods) = modifications.get(&target_chunk_pos)
                 {
-                    apply_modifications(&mut chunk_face, mods, block_list);
+                    apply_modifications(&mut chunk_face, mods);
                 }
                 chunk_face
             });

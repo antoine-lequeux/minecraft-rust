@@ -45,7 +45,6 @@ pub fn manage_chunk_loading(
     mut chunk_map: ResMut<ChunkMap>,
     mut chunk_state: ResMut<ChunkLoadState>,
     camera: Query<&Transform, With<FlyCam>>,
-    block_list: Res<BlockList>,
 )
 {
     // Get player chunk position and camera info.
@@ -168,16 +167,15 @@ pub fn manage_chunk_loading(
         if chunk_state.tasks.len() >= MAX_CONCURRENT_LOADS
         {
             break;
-        } 
+        }
         // Spawn async task to generate the chunk.
         let seed = map.seed;
         let modifications = map.modified.get(&pos).cloned().unwrap_or_default();
-        let block_list_clone = block_list.clone();
         let task_pool = AsyncComputeTaskPool::get();
         let task = task_pool.spawn(async move {
             // Generate the chunk and apply any modifications.
-            let mut chunk = load_raw_chunk(seed, pos, &block_list_clone);
-            apply_modifications(&mut chunk, &modifications, &block_list_clone);
+            let mut chunk = load_raw_chunk(seed, pos);
+            apply_modifications(&mut chunk, &modifications);
             (pos, chunk)
         });
         // Insert the loading task into the state.

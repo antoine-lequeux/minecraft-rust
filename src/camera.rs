@@ -1,7 +1,7 @@
 use bevy::{input::mouse::MouseMotion, prelude::*};
 
 use crate::{
-    chunks::{Chunk, Map, Modification},
+    chunks::{Chunk, Map, Modification, calculate_face_heights},
     types::{BlockType, CHUNK_HEIGHT, CHUNK_SIZE, ChunkPos},
     world::ChunkMap,
 };
@@ -232,6 +232,12 @@ pub fn block_interaction(
                                 .or_default()
                                 .push(Modification { index: idx, new: BlockType::Air });
 
+                            // Recalculate face heights after block destruction.
+                            let (min_face_height, max_face_height) =
+                                calculate_face_heights(&chunk.blocks);
+                            chunk.min_face_height = min_face_height;
+                            chunk.max_face_height = max_face_height;
+
                             // Check if the block is on a chunk border and mark adjacent chunks for
                             // remeshing.
                             let adjacent_chunks =
@@ -272,12 +278,18 @@ pub fn block_interaction(
                                         * (CHUNK_SIZE as usize)
                                         + (last_lz as usize) * (CHUNK_SIZE as usize)
                                         + (last_lx as usize); // Place the block at the last air position.
-                                    target_chunk.blocks[last_idx] = BlockType::Water;
+                                    target_chunk.blocks[last_idx] = BlockType::OakLeaves;
 
                                     let target_chunk_pos = ChunkPos { x: last_cx, y: last_cz };
                                     map.modified.entry(target_chunk_pos).or_default().push(
-                                        Modification { index: last_idx, new: BlockType::Water },
+                                        Modification { index: last_idx, new: BlockType::OakLeaves },
                                     );
+
+                                    // Recalculate face heights after block placement.
+                                    let (min_face_height, max_face_height) =
+                                        calculate_face_heights(&target_chunk.blocks);
+                                    target_chunk.min_face_height = min_face_height;
+                                    target_chunk.max_face_height = max_face_height;
 
                                     // Check if the block is on a chunk border and mark adjacent
                                     // chunks for remeshing.
