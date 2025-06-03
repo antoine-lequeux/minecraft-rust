@@ -3,6 +3,8 @@ use bevy::{
     prelude::*,
 };
 
+const MAIN_FONT: &str = "fonts/minecraft.otf";
+
 // Marker struct to help identify the FPS UI component, since there may be many
 // Text components.
 #[derive(Component)]
@@ -54,16 +56,12 @@ pub fn setup_ui(mut commands: Commands, assets: Res<AssetServer>)
         .spawn((
             // Create a Text with multiple possible spans.
             Text::new("FPS: "),
-            TextFont { font: assets.load("fonts/minecraft.otf"), font_size: 30.0, ..default() },
+            TextFont { font: assets.load(MAIN_FONT), font_size: 30.0, ..default() },
         ))
         .with_child((
             // Create a TextSpan that will be updated with the FPS value.
             TextSpan::default(),
-            TextFont {
-                font: assets.load("fonts/minecraft.otf"),
-                font_size: 30.0,
-                ..Default::default()
-            },
+            TextFont { font: assets.load(MAIN_FONT), font_size: 30.0, ..Default::default() },
             // Initialize the timer.
             FpsText { timer: Timer::from_seconds(0.5, TimerMode::Repeating) },
         ));

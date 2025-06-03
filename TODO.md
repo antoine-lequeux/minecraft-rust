@@ -1,8 +1,6 @@
-- Optimize chunk meshing so that invisible faces are not rendered (even when they are hidden by another chunk)
-
 - Add water (apply a shader when the player is underwater)
 
-- Add procedural terrain generation (test different algorithms, use the world seed)
+- Upgrade terrain generation for a more realistic result
 
 - Menus (main menu & pause menu)
 
