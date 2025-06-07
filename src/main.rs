@@ -1,8 +1,4 @@
-use bevy::{
-    diagnostic::FrameTimeDiagnosticsPlugin,
-    prelude::*,
-    window::{CursorGrabMode, WindowResolution},
-};
+use bevy::{diagnostic::FrameTimeDiagnosticsPlugin, prelude::*, window::WindowResolution};
 use minecraft::*;
 
 fn main()
@@ -15,25 +11,38 @@ fn main()
         FrameTimeDiagnosticsPlugin::default(),
     ));
 
+    app.init_state::<GameState>();
+
     app.init_resource::<BlockList>();
     app.insert_resource(Map::new(0xDE1FA234));
     app.init_resource::<ChunkMap>();
     app.init_resource::<ChunkLoadState>();
     app.init_resource::<ChunkMeshState>();
-    app.add_systems(Startup, load_block_types.after(setup));
+    app.add_systems(Startup, load_block_types.after(setup)); // World systems - only run when in game (not when paused)
     app.add_systems(
         Update,
-        (manage_chunk_loading, process_chunk_tasks, process_chunk_mesh_tasks).chain(),
+        (manage_chunk_loading, process_chunk_tasks, process_chunk_mesh_tasks)
+            .chain()
+            .run_if(in_state(GameState::InGame)),
     );
-    app.add_systems(Update, fly_camera_movement);
+    app.add_systems(Update, fly_camera_movement.run_if(in_state(GameState::InGame)));
     // app.add_systems(Update, count_chunks);
-    app.add_systems(Update, mouse_look);
+    app.add_systems(Update, mouse_look.run_if(in_state(GameState::InGame)));
     app.add_systems(
         Update,
-        (block_interaction, trigger_chunk_remeshing, remesh_changed_chunks).chain(),
+        (block_interaction, trigger_chunk_remeshing, remesh_changed_chunks)
+            .chain()
+            .run_if(in_state(GameState::InGame)),
     );
+    app.add_systems(OnEnter(GameState::MainMenu), on_enter_main_menu);
+    app.add_systems(OnExit(GameState::MainMenu), on_exit_main_menu);
+    app.add_systems(OnEnter(GameState::InGame), on_enter_in_game);
+    app.add_systems(OnEnter(GameState::Paused), on_enter_pause_menu);
+    app.add_systems(OnExit(GameState::Paused), on_exit_pause_menu);
 
-    app.add_systems(Update, text_update_system);
+    app.add_systems(Update, text_update_system.run_if(in_state(GameState::InGame)));
+    app.add_systems(Update, button_system);
+    app.add_systems(Update, keyboard_input_system);
 
     app.add_systems(Startup, setup);
 
@@ -57,51 +66,12 @@ fn setup(mut commands: Commands, mut window: Single<&mut Window>, assets: Res<As
         oak_leaves: assets.load("textures/oak_leaves.png"),
         water: assets.load("textures/water.png"),
     });
+    // Default background color for main menu (dark background).
+    commands.insert_resource(ClearColor(Color::srgb(0.2, 0.2, 0.2)));
 
-    // Blue sky.
-    commands.insert_resource(ClearColor(Color::srgb(0.53, 0.81, 0.92)));
-
-    // Ambient light.
-    commands.insert_resource(AmbientLight {
-        color: Color::WHITE,
-        brightness: 100.0,
-        affects_lightmapped_meshes: true,
-    });
-
-    // 3D camera.
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(30.0, 100.0, 80.0).looking_at(Vec3::ZERO, Vec3::Y),
-        FlyCam { speed: 12.0, sprint_mult: 20.0, sensitivity: 0.002, yaw: 0.0, pitch: 0.0 },
-        Camera { order: 0, ..default() },
-        DistanceFog {
-            color: Color::srgb(0.53, 0.81, 0.92),
-            falloff: FogFalloff::Linear {
-                start: (RENDER_DISTANCE - 2) as f32 * 16.0,
-                end: RENDER_DISTANCE as f32 * 16.0,
-            },
-            ..Default::default()
-        },
-    ));
-
-    // Main light (the sun).
-    commands.spawn((
-        DirectionalLight { shadows_enabled: true, illuminance: 10000.0, ..default() },
-        Transform::from_rotation(Quat::from_euler(
-            EulerRot::ZYX,
-            0.0,
-            std::f32::consts::FRAC_PI_4,
-            -std::f32::consts::FRAC_PI_4,
-        )),
-    ));
-
-    // Setup UI elements
-    setup_ui(commands, assets);
-
-    // Lock cursor position.
-    window.cursor_options.visible = false;
-    window.cursor_options.grab_mode = CursorGrabMode::Locked;
+    // Setup global 2D camera for UI with a marker component.
+    commands.spawn((UICamera, Camera2d::default(), Camera { order: 1, ..default() }));
 
     // Set the window resolution.
-    window.resolution = WindowResolution::new(1280.0, 720.0);
+    window.resolution = WindowResolution::new(1920.0, 1080.0);
 }

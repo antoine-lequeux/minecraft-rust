@@ -44,7 +44,7 @@ fn get_adjacent_chunks_for_border_block(
 }
 
 // The FlyCam component represents the player camera.
-#[derive(Component)]
+#[derive(Component, Clone)]
 pub struct FlyCam
 {
     pub speed: f32,
