@@ -16,7 +16,7 @@ fn main()
     ));
 
     app.init_resource::<BlockList>();
-    app.insert_resource(Map::new(0xDF1A5B2E));
+    app.insert_resource(Map::new(0xDE1FA234));
     app.init_resource::<ChunkMap>();
     app.init_resource::<ChunkLoadState>();
     app.init_resource::<ChunkMeshState>();

@@ -61,7 +61,7 @@ pub fn mesh_chunk(
     chunk: &Chunk,
     block_list: &BlockList,
     neighbor_chunks: &HashMap<ChunkPos, Chunk>,
-    seed: u64,
+    seed: u32,
     modifications: &std::collections::HashMap<ChunkPos, Vec<Modification>>,
 ) -> HashMap<Handle<Image>, Mesh>
 {
@@ -87,7 +87,7 @@ pub fn mesh_chunk(
         chunk: &Chunk,
         block_list: &BlockList,
         neighbor_chunks: &HashMap<ChunkPos, Chunk>,
-        seed: u64,
+        seed: u32,
         cs: usize,
         cs_i32: i32,
         ch_i32: i32,
