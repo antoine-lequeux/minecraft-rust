@@ -4,7 +4,7 @@ use bevy::{
     prelude::*,
 };
 
-use crate::gamestate::GameState;
+use crate::gamestate::{GameState, MenuStack};
 
 const MAIN_FONT: &str = "fonts/minecraft.otf";
 
@@ -80,7 +80,7 @@ const BUTTON_BORDER_COLOR: Color = Color::BLACK;
 const BUTTON_FONT_COLOR: Color = Color::WHITE;
 
 const BUTTON_FONT_SIZE: f32 = 30.0;
-const BUTTON_WIDTH: f32 = 200.0;
+const BUTTON_WIDTH: f32 = 350.0;
 const BUTTON_HEIGHT: f32 = 80.0;
 const BUTTON_BORDER_SIZE: f32 = 5.0;
 
@@ -102,26 +102,24 @@ pub const fn get_semitransparent_panel_height(rows: u8) -> f32
     return (rows as f32 * BUTTON_HEIGHT) + ((rows as f32 + 1.0) * BUTTON_PADDING);
 }
 
-// Marker components to identify which button was pressed.
-#[derive(Component)]
-pub struct PlayButton;
-
-#[derive(Component)]
-pub struct QuitButton;
-
-#[derive(Component)]
-pub struct ResumeButton;
-
-#[derive(Component)]
-pub struct MainMenuButton;
+// Marker component to identify which button was pressed.
+#[derive(Component, Clone)]
+pub enum ButtonAction
+{
+    NewWorld,
+    LoadWorld,
+    Settings,
+    Quit,
+    MainMenu,
+    Back,
+}
 
 // Helper function to create a button with a specific marker component.
-pub fn create_button<T: Component>(text: &str, marker: T, assets: &Res<AssetServer>)
--> impl Bundle
+pub fn create_button(text: &str, action: ButtonAction, assets: &Res<AssetServer>) -> impl Bundle
 {
     (
         Button,
-        marker,
+        action,
         Node {
             width: Val::Px(BUTTON_WIDTH),
             height: Val::Px(BUTTON_HEIGHT),
@@ -169,19 +167,16 @@ pub fn setup_ingame_ui(mut commands: Commands, assets: Res<AssetServer>)
 
 pub fn button_system(
     mut interaction_query: Query<
-        (&Interaction, &mut BackgroundColor, &mut BorderColor, &Children),
+        (&Interaction, &mut BackgroundColor, &mut BorderColor, &ButtonAction),
         (Changed<Interaction>, With<Button>),
     >,
-    play_button_query: Query<&Interaction, (With<PlayButton>, Changed<Interaction>)>,
-    quit_button_query: Query<&Interaction, (With<QuitButton>, Changed<Interaction>)>,
-    resume_button_query: Query<&Interaction, (With<ResumeButton>, Changed<Interaction>)>,
-    main_menu_button_query: Query<&Interaction, (With<MainMenuButton>, Changed<Interaction>)>,
+    mut menu_stack: ResMut<MenuStack>,
     mut next_state: ResMut<NextState<GameState>>,
     mut app_exit_events: EventWriter<AppExit>,
 )
 {
     // Handle visual button states.
-    for (interaction, mut color, mut border_color, ..) in &mut interaction_query
+    for (interaction, mut color, mut border_color, action) in &mut interaction_query
     {
         match *interaction
         {
@@ -189,6 +184,42 @@ pub fn button_system(
             {
                 *color = BUTTON_COLOR_PRESSED.into();
                 border_color.0 = BUTTON_BORDER_COLOR;
+
+                // Process the associated action.
+                match action
+                {
+                    ButtonAction::NewWorld =>
+                    {
+                        next_state.set(GameState::InGame);
+                    },
+                    ButtonAction::LoadWorld => (),
+                    ButtonAction::Settings =>
+                    {
+                        next_state.set(GameState::Settings);
+                    },
+                    ButtonAction::Quit =>
+                    {
+                        app_exit_events.write(AppExit::Success);
+                    },
+                    ButtonAction::MainMenu =>
+                    {
+                        next_state.set(GameState::MainMenu);
+                    },
+                    ButtonAction::Back =>
+                    {
+                        // Go back to the previous menu state.
+                        menu_stack.0.pop();
+                        if let Some(state) = menu_stack.0.last()
+                        {
+                            next_state.set(state.clone());
+                        }
+                        else
+                        {
+                            // If no previous state, go to the main menu (should not happen).
+                            next_state.set(GameState::MainMenu);
+                        }
+                    },
+                }
             },
             Interaction::Hovered =>
             {
@@ -200,40 +231,6 @@ pub fn button_system(
                 *color = BUTTON_COLOR_BASE.into();
                 border_color.0 = BUTTON_BORDER_COLOR;
             },
-        }
-    }
-
-    // Handle Play button press (Main Menu -> In Game).
-    for interaction in &play_button_query
-    {
-        if *interaction == Interaction::Pressed
-        {
-            next_state.set(GameState::InGame);
-        }
-    } // Handle Quit button press.
-    for interaction in &quit_button_query
-    {
-        if *interaction == Interaction::Pressed
-        {
-            app_exit_events.write(AppExit::Success);
-        }
-    }
-
-    // Handle Resume button press (Pause -> In Game).
-    for interaction in &resume_button_query
-    {
-        if *interaction == Interaction::Pressed
-        {
-            next_state.set(GameState::InGame);
-        }
-    }
-
-    // Handle Main Menu button press (Pause -> Main Menu).
-    for interaction in &main_menu_button_query
-    {
-        if *interaction == Interaction::Pressed
-        {
-            next_state.set(GameState::MainMenu);
         }
     }
 }

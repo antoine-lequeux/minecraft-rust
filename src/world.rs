@@ -61,7 +61,7 @@ pub fn manage_chunk_loading(
     };
 
     // Camera FOV and culling parameters.
-    let fov_cos = (120.0f32.to_radians() / 2.0).cos();
+    let fov_cos = (160.0f32.to_radians() / 2.0).cos();
     let max_dist = (RENDER_DISTANCE as f32 + 0.5) * CHUNK_SIZE as f32;
 
     let cam_forward_xz = {
@@ -77,7 +77,7 @@ pub fn manage_chunk_loading(
     // A helper to determine if a chunk is visible from the camera pov.
     let is_chunk_visible = |chunk_pos: ChunkPos| {
         // Always show the chunk under the player and its neighbors in a radius of 2.
-        if (chunk_pos.x - player_chunk.x).abs() <= 2 && (chunk_pos.y - player_chunk.y).abs() <= 2
+        if (chunk_pos.x - player_chunk.x).abs() <= 3 && (chunk_pos.y - player_chunk.y).abs() <= 3
         {
             return true;
         }

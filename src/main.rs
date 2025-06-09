@@ -15,6 +15,7 @@ fn main()
 
     app.init_resource::<BlockList>();
     app.insert_resource(Map::new(0xDE1FA234));
+    app.init_resource::<MenuStack>();
     app.init_resource::<ChunkMap>();
     app.init_resource::<ChunkLoadState>();
     app.init_resource::<ChunkMeshState>();
@@ -36,7 +37,10 @@ fn main()
     );
     app.add_systems(OnEnter(GameState::MainMenu), on_enter_main_menu);
     app.add_systems(OnExit(GameState::MainMenu), on_exit_main_menu);
+    app.add_systems(OnEnter(GameState::Settings), on_enter_settings);
+    app.add_systems(OnExit(GameState::Settings), on_exit_settings);
     app.add_systems(OnEnter(GameState::InGame), on_enter_in_game);
+    app.add_systems(OnExit(GameState::InGame), on_exit_in_game);
     app.add_systems(OnEnter(GameState::Paused), on_enter_pause_menu);
     app.add_systems(OnExit(GameState::Paused), on_exit_pause_menu);
 

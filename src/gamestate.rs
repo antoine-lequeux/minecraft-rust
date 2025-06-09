@@ -1,10 +1,11 @@
 use bevy::{prelude::*, window::CursorGrabMode};
 
 use crate::{
+    ButtonAction,
     camera::FlyCam,
     get_semitransparent_panel_height, get_semitransparent_panel_width,
     types::RENDER_DISTANCE,
-    ui::{MainMenuButton, PlayButton, QuitButton, ResumeButton, create_button, setup_ingame_ui},
+    ui::{create_button, setup_ingame_ui},
 };
 
 // Resource to preserve camera state when pausing.
@@ -22,11 +23,27 @@ pub enum GameState
     MainMenu,
     InGame,
     Paused,
+    Settings,
+}
+
+// This resource stacks the previous game states so we can navigate back.
+#[derive(Resource)]
+pub struct MenuStack(pub Vec<GameState>);
+
+impl Default for MenuStack
+{
+    fn default() -> Self
+    {
+        return Self(vec![GameState::MainMenu]);
+    }
 }
 
 // Components to mark UI elements for different states.
 #[derive(Component)]
 pub struct MainMenuUI;
+
+#[derive(Component)]
+pub struct SettingsUI;
 
 #[derive(Component)]
 pub struct InGameUI;
@@ -45,6 +62,8 @@ pub struct GameLighting;
 #[derive(Component)]
 pub struct UICamera;
 
+const MENU_BACKGROUND_COLOR: Color = Color::srgb(0.2, 0.2, 0.2);
+
 pub fn on_enter_main_menu(
     mut commands: Commands,
     mut window: Single<&mut Window>,
@@ -53,7 +72,6 @@ pub fn on_enter_main_menu(
     in_game_query: Query<Entity, With<InGameUI>>,
     camera_query: Query<Entity, With<GameCamera>>,
     lighting_query: Query<Entity, With<GameLighting>>,
-    pause_menu_query: Query<Entity, With<PauseMenuUI>>,
 )
 {
     // Clean up any existing game elements.
@@ -74,12 +92,6 @@ pub fn on_enter_main_menu(
         commands.entity(entity).despawn();
     }
 
-    // Despawn pause menu if it exists.
-    for entity in &pause_menu_query
-    {
-        commands.entity(entity).despawn();
-    }
-
     // Remove preserved camera state.
     commands.remove_resource::<PreservedCameraState>();
 
@@ -88,7 +100,7 @@ pub fn on_enter_main_menu(
     window.cursor_options.grab_mode = CursorGrabMode::None;
 
     // Set background to dark gray for main menu.
-    clear_color.0 = Color::srgb(0.2, 0.2, 0.2);
+    clear_color.0 = MENU_BACKGROUND_COLOR;
 
     // Spawn main menu UI.
     commands
@@ -105,15 +117,65 @@ pub fn on_enter_main_menu(
             },
         ))
         .with_children(|parent| {
-            parent.spawn(create_button("Play", PlayButton, &assets));
-            parent.spawn(create_button("Quit", QuitButton, &assets));
+            parent.spawn(create_button("Create a new World", ButtonAction::NewWorld, &assets));
+            parent.spawn(create_button("Load a World", ButtonAction::LoadWorld, &assets));
+            parent.spawn(create_button("Settings", ButtonAction::Settings, &assets));
+            parent.spawn(create_button("Quit", ButtonAction::Quit, &assets));
         });
 }
 
 pub fn on_exit_main_menu(mut commands: Commands, main_menu_query: Query<Entity, With<MainMenuUI>>)
 {
-    // Despawn all main menu UI elements
+    // Despawn all main menu UI elements.
     for entity in &main_menu_query
+    {
+        commands.entity(entity).despawn();
+    }
+}
+
+pub fn on_enter_settings(
+    mut commands: Commands,
+    mut window: Single<&mut Window>,
+    assets: Res<AssetServer>,
+    mut menu_stack: ResMut<MenuStack>,
+)
+{
+    if menu_stack.0.last() != Some(&GameState::Settings)
+    {
+        menu_stack.0.push(GameState::Settings);
+    }
+
+    // Show cursor and unlock it.
+    window.cursor_options.visible = true;
+    window.cursor_options.grab_mode = CursorGrabMode::None;
+
+    // Spawn settings menu UI with full grey overlay.
+    commands
+        .spawn((
+            SettingsUI,
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(10.0),
+                ..default()
+            },
+            BackgroundColor(MENU_BACKGROUND_COLOR),
+        ))
+        .with_children(|parent| {
+            parent.spawn(create_button("Back", ButtonAction::Back, &assets));
+        });
+}
+
+pub fn on_exit_settings(
+    mut commands: Commands,
+    settings_menu_query: Query<Entity, With<SettingsUI>>,
+)
+{
+    // Despawn all settings menu UI elements.
+    for entity in &settings_menu_query
     {
         commands.entity(entity).despawn();
     }
@@ -126,8 +188,14 @@ pub fn on_enter_in_game(
     assets: Res<AssetServer>,
     existing_camera_query: Query<Entity, With<GameCamera>>,
     existing_ui_query: Query<Entity, With<InGameUI>>,
+    mut menu_stack: ResMut<MenuStack>,
 )
 {
+    if menu_stack.0.last() != Some(&GameState::InGame)
+    {
+        menu_stack.0.push(GameState::InGame);
+    }
+
     // Hide cursor and lock it for FPS controls.
     window.cursor_options.visible = false;
     window.cursor_options.grab_mode = CursorGrabMode::Locked;
@@ -152,7 +220,11 @@ pub fn on_enter_in_game(
         commands.spawn((
             GameCamera,
             Camera3d::default(),
-            Transform::from_xyz(30.0, 100.0, 80.0).looking_at(Vec3::ZERO, Vec3::Y),
+            Projection::Perspective(PerspectiveProjection {
+                fov: std::f32::consts::FRAC_PI_3, // 60 degrees.
+                ..default()
+            }),
+            Transform::from_xyz(0.0, 100.0, 0.0).looking_at(Vec3::ZERO, Vec3::Y),
             FlyCam { speed: 12.0, sprint_mult: 20.0, sensitivity: 0.002, yaw: 0.0, pitch: 0.0 },
             Camera { order: 0, ..default() },
             DistanceFog {
@@ -186,14 +258,22 @@ pub fn on_enter_in_game(
     }
 }
 
+pub fn on_exit_in_game() {}
+
 pub fn on_enter_pause_menu(
     mut commands: Commands,
     mut window: Single<&mut Window>,
     assets: Res<AssetServer>,
     camera_query: Query<(&Transform, &FlyCam), With<GameCamera>>,
     in_game_ui_query: Query<Entity, With<InGameUI>>,
+    mut menu_stack: ResMut<MenuStack>,
 )
 {
+    if menu_stack.0.last() != Some(&GameState::Paused)
+    {
+        menu_stack.0.push(GameState::Paused);
+    }
+
     // Preserve camera state.
     if let Ok((transform, flycam)) = camera_query.single()
     {
@@ -233,7 +313,7 @@ pub fn on_enter_pause_menu(
                 .spawn((
                     Node {
                         width: Val::Px(get_semitransparent_panel_width(1)),
-                        height: Val::Px(get_semitransparent_panel_height(2)),
+                        height: Val::Px(get_semitransparent_panel_height(3)),
                         align_items: AlignItems::Center,
                         justify_content: JustifyContent::Center,
                         flex_direction: FlexDirection::Column,
@@ -245,8 +325,9 @@ pub fn on_enter_pause_menu(
                     BorderRadius::all(Val::Px(10.0)),
                 ))
                 .with_children(|panel| {
-                    panel.spawn(create_button("Resume", ResumeButton, &assets));
-                    panel.spawn(create_button("Main Menu", MainMenuButton, &assets));
+                    panel.spawn(create_button("Resume", ButtonAction::Back, &assets));
+                    panel.spawn(create_button("Settings", ButtonAction::Settings, &assets));
+                    panel.spawn(create_button("Main Menu", ButtonAction::MainMenu, &assets));
                 });
         });
 }
