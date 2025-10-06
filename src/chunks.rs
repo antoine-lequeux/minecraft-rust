@@ -13,6 +13,7 @@ pub struct Chunk
     pub blocks: Box<[BlockType; TOTAL]>,
     pub min_face_height: usize, // Minimum height where faces could be drawn.
     pub max_face_height: usize, // Maximum height where faces could be drawn.
+    pub remesh_flag: bool,      // Set to true to trigger remeshing.
 }
 
 // Each chunk is always loaded using the seed, instead of being saved.
@@ -294,7 +295,13 @@ pub fn load_raw_chunk(seed: u32, pos: ChunkPos) -> Chunk
     }
 
     let (min_face_height, max_face_height) = calculate_face_heights(&blocks);
-    return Chunk { pos, blocks: blocks.into(), min_face_height, max_face_height };
+    return Chunk {
+        pos,
+        blocks: blocks.into(),
+        min_face_height,
+        max_face_height,
+        remesh_flag: false,
+    };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -352,7 +359,13 @@ pub fn load_chunk_face(seed: u32, pos: ChunkPos, face: ChunkFace) -> Chunk
     }
 
     let (min_face_height, max_face_height) = calculate_face_heights(&blocks);
-    return Chunk { pos, blocks: blocks.into(), min_face_height, max_face_height };
+    return Chunk {
+        pos,
+        blocks: blocks.into(),
+        min_face_height,
+        max_face_height,
+        remesh_flag: false,
+    };
 }
 
 // Helper function to calculate the minimal and maximal heights for face

@@ -358,9 +358,7 @@ pub fn trigger_chunk_remeshing(
             {
                 if let Ok(mut chunk) = chunks.get_mut(chunk_entity)
                 {
-                    // Simply touch the chunk to trigger the Change<Chunk> detection.
-                    // We clone the position to force a change without actually changing data.
-                    chunk.pos = chunk.pos;
+                    chunk.remesh_flag = true;
                 }
             }
 

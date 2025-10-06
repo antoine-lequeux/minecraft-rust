@@ -2,7 +2,7 @@
 
 - Upgrade terrain generation for a more realistic result
 
-- Menus (main menu & pause menu)
+- Menus (settings, load...)
 
 - Save & load
 
