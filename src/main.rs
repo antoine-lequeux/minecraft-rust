@@ -1,5 +1,19 @@
-use bevy::{diagnostic::FrameTimeDiagnosticsPlugin, prelude::*, window::WindowResolution};
+use bevy::{
+    diagnostic::FrameTimeDiagnosticsPlugin,
+    prelude::*,
+    render::{
+        RenderPlugin,
+        settings::{PowerPreference, RenderCreation, WgpuSettings},
+    },
+    window::WindowResolution,
+};
+#[cfg(not(feature = "dev"))]
+use mimalloc::MiMalloc;
 use minecraft::*;
+
+#[cfg(not(feature = "dev"))]
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 fn main()
 {
@@ -7,7 +21,15 @@ fn main()
 
     // ImagePlugin is modified to use nearest filtering for pixelated textures.
     app.add_plugins((
-        DefaultPlugins.set(ImagePlugin::default_nearest()),
+        DefaultPlugins
+            .set(ImagePlugin::default_nearest())
+            .set(RenderPlugin {
+                render_creation: RenderCreation::Automatic(WgpuSettings {
+                    power_preference: PowerPreference::HighPerformance,
+                    ..default()
+                }),
+                ..default()
+            }),
         FrameTimeDiagnosticsPlugin::default(),
     ));
 

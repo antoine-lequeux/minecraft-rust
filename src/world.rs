@@ -45,6 +45,7 @@ pub fn manage_chunk_loading(
     mut chunk_map: ResMut<ChunkMap>,
     mut chunk_state: ResMut<ChunkLoadState>,
     camera: Query<&Transform, With<FlyCam>>,
+    mut visibility_query: Query<&mut Visibility>,
 )
 {
     // Get player chunk position and camera info.
@@ -61,7 +62,7 @@ pub fn manage_chunk_loading(
     };
 
     // Camera FOV and culling parameters.
-    let fov_cos = (160.0f32.to_radians() / 2.0).cos();
+    let fov_cos = (140.0f32.to_radians() / 2.0).cos();
     let max_dist = (RENDER_DISTANCE as f32 + 0.5) * CHUNK_SIZE as f32;
 
     let cam_forward_xz = {
@@ -77,7 +78,7 @@ pub fn manage_chunk_loading(
     // A helper to determine if a chunk is visible from the camera pov.
     let is_chunk_visible = |chunk_pos: ChunkPos| {
         // Always show the chunk under the player and its neighbors in a radius of 2.
-        if (chunk_pos.x - player_chunk.x).abs() <= 3 && (chunk_pos.y - player_chunk.y).abs() <= 3
+        if (chunk_pos.x - player_chunk.x).abs() <= 3 && (chunk_pos.y - player_chunk.y).abs() <= 5
         {
             return true;
         }
@@ -115,10 +116,7 @@ pub fn manage_chunk_loading(
                 continue;
             }
             let pos = ChunkPos { x: player_chunk.x + dx, y: player_chunk.y + dz };
-            if is_chunk_visible(pos)
-            {
-                desired.push(pos);
-            }
+            desired.push(pos);
         }
     }
 
@@ -181,6 +179,20 @@ pub fn manage_chunk_loading(
         // Insert the loading task into the state.
         chunk_state.tasks.insert(pos, task);
     }
+
+    // Update visibility of loaded chunks based on FOV.
+    for (pos, &entity) in chunk_map.loaded_chunks.iter()
+    {
+        if let Ok(mut vis) = visibility_query.get_mut(entity)
+        {
+            let should_be_visible = is_chunk_visible(*pos);
+            let new_vis = if should_be_visible { Visibility::Inherited } else { Visibility::Hidden };
+            if *vis != new_vis
+            {
+                *vis = new_vis;
+            }
+        }
+    }
 }
 
 // Helper function to get data for neighboring chunks.
@@ -197,9 +209,9 @@ pub fn get_neighbor_chunk_data(
         ChunkPos { x: 0, y: -1 },
         ChunkPos { x: 0, y: 1 },
     ];
-    for offset in &neighbor_offsets
+    for offset in neighbor_offsets
     {
-        let neighbor_pos = current_chunk_pos + *offset;
+        let neighbor_pos = current_chunk_pos + offset;
         if let Some(entity) = chunk_map.loaded_chunks.get(&neighbor_pos)
         {
             if let Ok(chunk_component) = all_chunks_query.get(*entity)
@@ -208,7 +220,7 @@ pub fn get_neighbor_chunk_data(
             }
         }
     }
-    neighbor_chunks_data
+    return neighbor_chunks_data;
 }
 
 // This system processes completed chunk loading tasks.
@@ -227,7 +239,7 @@ pub fn process_chunk_tasks(
     use futures_util::task::noop_waker_ref;
 
     let mut completed = Vec::new();
-    for (task_pos, task) in chunk_state.tasks.iter_mut()
+    for (&task_pos, task) in chunk_state.tasks.iter_mut()
     {
         let waker = noop_waker_ref();
         let mut cx = Context::from_waker(waker);
@@ -267,7 +279,7 @@ pub fn process_chunk_tasks(
                 (chunk_pos_copy, meshes_by_tex)
             });
             mesh_state.tasks.insert(chunk_pos, mesh_task);
-            completed.push(*task_pos);
+            completed.push(task_pos);
         }
     }
     for pos in completed

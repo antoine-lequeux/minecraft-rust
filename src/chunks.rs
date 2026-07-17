@@ -374,16 +374,12 @@ pub fn calculate_face_heights(blocks: &[BlockType; TOTAL]) -> (usize, usize)
 {
     let cs = CHUNK_SIZE as usize;
     let cs_sq = cs * cs;
-    let ch = CHUNK_HEIGHT as usize;
 
-    // Find the lowest layer with any non-opaque blocks.
-    let mut min_height = CHUNK_HEIGHT as usize;
-    // Find the highest layer with any opaque blocks.
+    // Find the highest layer with any non-air blocks.
     let mut max_height = 0;
 
-    for y in 0 .. (CHUNK_HEIGHT as usize)
+    for y in (0 .. (CHUNK_HEIGHT as usize)).rev()
     {
-        let mut has_transparent = false;
         let mut has_opaque = false;
 
         // Check all blocks in this layer.
@@ -394,48 +390,28 @@ pub fn calculate_face_heights(blocks: &[BlockType; TOTAL]) -> (usize, usize)
                 let idx = y * cs_sq + z * cs + x;
                 let block_type = blocks[idx];
 
-                // Use the block's transparency property from BlockList.
-                if block_type == BlockType::Air
-                {
-                    has_transparent = true;
-                }
-                else
+                if block_type != BlockType::Air
                 {
                     has_opaque = true;
-                }
-
-                // Early exit if we found both types.
-                if has_transparent && has_opaque
-                {
                     break;
                 }
             }
-            if has_transparent && has_opaque
+            if has_opaque
             {
                 break;
             }
         }
 
-        // Lowest layer with any non-opaque blocks.
-        if min_height == ch && has_transparent
-        {
-            min_height = y;
-        }
-
-        // Highest layer with any opaque blocks.
         if has_opaque
         {
             max_height = y;
+            break;
         }
     }
 
-    // If no transparent blocks found, set min_height to max_height.
-    if min_height == ch
-    {
-        min_height = max_height;
-    }
-
-    return (min_height, max_height);
+    // Always return 0 for min_height, because border blocks might be exposed
+    // to neighboring chunks even if this layer has no transparent blocks internally.
+    return (0, max_height);
 }
 
 // This function applies any saved modifications to a chunk after it is loaded.
