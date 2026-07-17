@@ -304,72 +304,7 @@ pub fn load_raw_chunk(seed: u32, pos: ChunkPos) -> Chunk
     };
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ChunkFace
-{
-    North,
-    South,
-    East,
-    West,
-}
-
-// Load only a specific face of the chunk.
-pub fn load_chunk_face(seed: u32, pos: ChunkPos, face: ChunkFace) -> Chunk
-{
-    let mut blocks = [BlockType::Air; TOTAL];
-    let mut terrain_heights = [[0_usize; CHUNK_SIZE as usize]; CHUNK_SIZE as usize];
-    let config = TerrainConfig::default();
-    let simplex = create_simplex(seed);
-
-    let cs = CHUNK_SIZE as usize;
-    match face
-    {
-        ChunkFace::North =>
-        {
-            let z = 0;
-            for x in 0 .. cs
-            {
-                generate_column(&simplex, pos, x, z, &mut blocks, &mut terrain_heights, &config);
-            }
-        },
-        ChunkFace::South =>
-        {
-            let z = cs - 1;
-            for x in 0 .. cs
-            {
-                generate_column(&simplex, pos, x, z, &mut blocks, &mut terrain_heights, &config);
-            }
-        },
-        ChunkFace::West =>
-        {
-            let x = 0;
-            for z in 0 .. cs
-            {
-                generate_column(&simplex, pos, x, z, &mut blocks, &mut terrain_heights, &config);
-            }
-        },
-        ChunkFace::East =>
-        {
-            let x = cs - 1;
-            for z in 0 .. cs
-            {
-                generate_column(&simplex, pos, x, z, &mut blocks, &mut terrain_heights, &config);
-            }
-        },
-    }
-
-    let (min_face_height, max_face_height) = calculate_face_heights(&blocks);
-    return Chunk {
-        pos,
-        blocks: blocks.into(),
-        min_face_height,
-        max_face_height,
-        remesh_flag: false,
-    };
-}
-
-// Helper function to calculate the minimal and maximal heights for face
-// drawing.
+// Helper function to calculate the minimal and maximal heights for face drawing.
 pub fn calculate_face_heights(blocks: &[BlockType; TOTAL]) -> (usize, usize)
 {
     let cs = CHUNK_SIZE as usize;

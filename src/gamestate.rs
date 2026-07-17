@@ -240,7 +240,7 @@ pub fn on_enter_in_game(
         // Spawn main light (the sun) for the game.
         commands.spawn((
             GameLighting,
-            DirectionalLight { shadows_enabled: true, illuminance: 10000.0, ..default() },
+            DirectionalLight { shadows_enabled: false, illuminance: 10000.0, ..default() },
             Transform::from_rotation(Quat::from_euler(
                 EulerRot::ZYX,
                 0.0,

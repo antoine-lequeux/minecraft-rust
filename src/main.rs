@@ -7,11 +7,9 @@ use bevy::{
     },
     window::WindowResolution,
 };
-#[cfg(not(feature = "dev"))]
 use mimalloc::MiMalloc;
 use minecraft::*;
 
-#[cfg(not(feature = "dev"))]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
@@ -31,20 +29,27 @@ fn main()
                 ..default()
             }),
         FrameTimeDiagnosticsPlugin::default(),
+        MaterialPlugin::<VoxelMaterial>::default(),
     ));
 
     app.init_state::<GameState>();
 
     app.init_resource::<BlockList>();
-    app.insert_resource(Map::new(0xDE1FA234));
+    app.insert_resource(Map::new(0x12345678));
     app.init_resource::<MenuStack>();
     app.init_resource::<ChunkMap>();
     app.init_resource::<ChunkLoadState>();
     app.init_resource::<ChunkMeshState>();
+    app.init_resource::<ChunkMeshQueue>();
     app.add_systems(Startup, load_block_types.after(setup)); // World systems - only run when in game (not when paused)
     app.add_systems(
         Update,
-        (manage_chunk_loading, process_chunk_tasks, process_chunk_mesh_tasks)
+        (
+            manage_chunk_loading,
+            process_chunk_tasks,
+            queue_chunk_meshes,
+            process_chunk_mesh_tasks,
+        )
             .chain()
             .run_if(in_state(GameState::InGame)),
     );
@@ -75,23 +80,31 @@ fn main()
     app.run();
 }
 
-// The setup system creates some global features.
-fn setup(mut commands: Commands, mut window: Single<&mut Window>, assets: Res<AssetServer>)
+// Setup global resources for rendering chunks.
+fn setup(
+    mut commands: Commands,
+    mut window: Single<&mut Window>,
+    assets: Res<AssetServer>,
+    mut materials: ResMut<Assets<VoxelMaterial>>,
+)
 {
-    // Load block textures.
-    commands.insert_resource(TextureHandles {
-        grass_side: assets.load("textures/grass_side.png"),
-        grass_top: assets.load("textures/grass_top.png"),
-        dirt: assets.load("textures/dirt.png"),
-        stone: assets.load("textures/stone.png"),
-        sand: assets.load("textures/sand.png"),
-        clay: assets.load("textures/clay.png"),
-        gravel: assets.load("textures/gravel.png"),
-        oak_log_inside: assets.load("textures/oak_log_inside.png"),
-        oak_log_outside: assets.load("textures/oak_log_outside.png"),
-        oak_leaves: assets.load("textures/oak_leaves.png"),
-        water: assets.load("textures/water.png"),
+    let atlas_handle = assets.load("textures/atlas.png");
+
+    let voxel_mat_opaque = VoxelMaterial {
+        base: StandardMaterial { alpha_mode: AlphaMode::Opaque, ..default() },
+        extension: VoxelMaterialExtension { atlas_texture: atlas_handle.clone() },
+    };
+
+    let voxel_mat_transparent = VoxelMaterial {
+        base: StandardMaterial { alpha_mode: AlphaMode::Mask(0.5), ..default() },
+        extension: VoxelMaterialExtension { atlas_texture: atlas_handle },
+    };
+
+    commands.insert_resource(GlobalMaterials {
+        opaque: materials.add(voxel_mat_opaque),
+        transparent: materials.add(voxel_mat_transparent),
     });
+
     // Default background color for main menu (dark background).
     commands.insert_resource(ClearColor(Color::srgb(0.2, 0.2, 0.2)));
 

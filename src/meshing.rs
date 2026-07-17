@@ -7,45 +7,45 @@ use bevy::{
 };
 
 use crate::{
-    ChunkFace, Map, Modification,
     blocks::BlockList,
-    chunks::{Chunk, apply_modifications, load_chunk_face},
+    chunks::{Chunk, Map},
     types::{BlockType, CHUNK_HEIGHT, CHUNK_SIZE, ChunkPos},
 };
 
 // The faces of each block, used for mesh generation.
+// We keep this to get normal vectors, but we'll generate the quads dynamically.
 pub const FACES: &[(IVec3, [[f32; 3]; 4], [[f32; 2]; 4])] = &[
-    // +X
+    // +X (0)
     (
         IVec3::new(1, 0, 0),
         [[1., 0., 0.], [1., 1., 0.], [1., 1., 1.], [1., 0., 1.]],
         [[0., 1.], [0., 0.], [1., 0.], [1., 1.]],
     ),
-    // -X
+    // -X (1)
     (
         IVec3::new(-1, 0, 0),
         [[0., 0., 1.], [0., 1., 1.], [0., 1., 0.], [0., 0., 0.]],
         [[0., 1.], [0., 0.], [1., 0.], [1., 1.]],
     ),
-    // +Y (top)
+    // +Y (top) (2)
     (
         IVec3::new(0, 1, 0),
         [[0., 1., 0.], [0., 1., 1.], [1., 1., 1.], [1., 1., 0.]],
         [[0., 1.], [0., 0.], [1., 0.], [1., 1.]],
     ),
-    // -Y (bottom)
+    // -Y (bottom) (3)
     (
         IVec3::new(0, -1, 0),
         [[0., 0., 1.], [0., 0., 0.], [1., 0., 0.], [1., 0., 1.]],
         [[0., 1.], [0., 0.], [1., 0.], [1., 1.]],
     ),
-    // +Z
+    // +Z (4)
     (
         IVec3::new(0, 0, 1),
         [[1., 0., 1.], [1., 1., 1.], [0., 1., 1.], [0., 0., 1.]],
         [[0., 1.], [0., 0.], [1., 0.], [1., 1.]],
     ),
-    // -Z
+    // -Z (5)
     (
         IVec3::new(0, 0, -1),
         [[0., 0., 0.], [0., 1., 0.], [1., 1., 0.], [1., 0., 0.]],
@@ -53,227 +53,426 @@ pub const FACES: &[(IVec3, [[f32; 3]; 4], [[f32; 2]; 4])] = &[
     ),
 ];
 
-// It would be too costly to create one mesh per block.
-// With a render distance of 16 chunks, more that 70 million blocks could be
-// loaded. Instead, we will create one mesh per chunk, and display only the
-// exposed faces of this mesh.
+// Helper function to check if a block is opaque at the given coordinates.
+fn is_opaque(
+    req_x: i32,
+    req_y: i32,
+    req_z: i32,
+    chunk: &Chunk,
+    block_list: &BlockList,
+    neighbor_chunks: &HashMap<ChunkPos, Chunk>,
+    cs: usize,
+    cs_i32: i32,
+    ch_i32: i32,
+) -> bool
+{
+    if !(0 .. ch_i32).contains(&req_y)
+    {
+        return false;
+    }
+    let mut target_chunk_pos = chunk.pos;
+    let mut req_x = req_x;
+    let mut req_z = req_z;
+
+    if req_x < 0
+    {
+        target_chunk_pos.x -= 1;
+        req_x += cs_i32;
+    }
+    else if req_x >= cs_i32
+    {
+        target_chunk_pos.x += 1;
+        req_x -= cs_i32;
+    }
+    if req_z < 0
+    {
+        target_chunk_pos.y -= 1;
+        req_z += cs_i32;
+    }
+    else if req_z >= cs_i32
+    {
+        target_chunk_pos.y += 1;
+        req_z -= cs_i32;
+    }
+
+    let chunk_data_to_use = if target_chunk_pos == chunk.pos
+    {
+        Some(chunk)
+    }
+    else
+    {
+        neighbor_chunks.get(&target_chunk_pos)
+    };
+
+    if let Some(selected_chunk) = chunk_data_to_use
+    {
+        let idx = (req_y as usize) * cs * cs + (req_z as usize) * cs + (req_x as usize);
+        return block_list
+            .data
+            .get(&selected_chunk.blocks[idx])
+            .map_or(false, |block| !block.transparent);
+    }
+
+    return false;
+}
+
 pub fn mesh_chunk(
     chunk: &Chunk,
     block_list: &BlockList,
     neighbor_chunks: &HashMap<ChunkPos, Chunk>,
-    seed: u32,
-    modifications: &std::collections::HashMap<ChunkPos, Vec<Modification>>,
-) -> HashMap<Handle<Image>, Mesh>
+) -> (Mesh, Mesh)
 {
-    // For each texture, we store positions, normals, UVs and indices.
-    let mut per_tex: HashMap<
-        Handle<Image>,
-        (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>),
-    > = HashMap::new();
+    let opaque_mesh = build_mesh_for(false, chunk, block_list, neighbor_chunks);
+    let transparent_mesh = build_mesh_for(true, chunk, block_list, neighbor_chunks);
+    return (opaque_mesh, transparent_mesh);
+}
+
+fn build_mesh_for(
+    transparent_pass: bool,
+    chunk: &Chunk,
+    block_list: &BlockList,
+    neighbor_chunks: &HashMap<ChunkPos, Chunk>,
+) -> Mesh
+{
+    let mut pos = Vec::new();
+    let mut norm = Vec::new();
+    let mut uv = Vec::new();
+    let mut color = Vec::new(); // Used to store layer_index
+    let mut idx = Vec::new();
 
     let cs = CHUNK_SIZE as usize;
     let ch = CHUNK_HEIGHT as usize;
     let cs_i32 = CHUNK_SIZE as i32;
     let ch_i32 = CHUNK_HEIGHT as i32;
 
-    // Cache for generated chunk faces: (ChunkPos, face) -> Chunk.
-    let mut face_cache: HashMap<(ChunkPos, ChunkFace), Chunk> = HashMap::new();
-
-    // Helper function to check if a block is opaque at the given coordinates.
-    fn is_opaque(
-        req_x: i32,
-        req_y: i32,
-        req_z: i32,
-        chunk: &Chunk,
-        block_list: &BlockList,
-        neighbor_chunks: &HashMap<ChunkPos, Chunk>,
-        seed: u32,
-        cs: usize,
-        cs_i32: i32,
-        ch_i32: i32,
-        face_cache: &mut HashMap<(ChunkPos, ChunkFace), Chunk>,
-        modifications: &std::collections::HashMap<ChunkPos, Vec<Modification>>,
-    ) -> bool
-    {
-        if !(0 .. ch_i32).contains(&req_y)
-        {
-            // If the y coordinate is below 0 or above the chunk height, it's not part of
-            // the world.
-            return false;
-        }
-        // Get the chunk in which the block is located.
-        let mut target_chunk_pos = chunk.pos;
-        // Determine if we need to look in a neighbor chunk based on x coordinate.
-        let mut face: Option<ChunkFace> = None;
-        let mut req_x = req_x;
-        let mut req_z = req_z;
-        if req_x < 0
-        {
-            target_chunk_pos.x -= 1;
-            req_x += cs_i32;
-            face = Some(ChunkFace::East);
-        }
-        else if req_x >= cs_i32
-        {
-            target_chunk_pos.x += 1;
-            req_x -= cs_i32;
-            face = Some(ChunkFace::West);
-        }
-        if req_z < 0
-        {
-            target_chunk_pos.y -= 1;
-            req_z += cs_i32;
-            face = Some(ChunkFace::South);
-        }
-        else if req_z >= cs_i32
-        {
-            target_chunk_pos.y += 1;
-            req_z -= cs_i32;
-            face = Some(ChunkFace::North);
-        }
-        let chunk_data_to_use = if target_chunk_pos == chunk.pos
-        {
-            Some(chunk)
-        }
-        else
-        {
-            neighbor_chunks.get(&target_chunk_pos)
-        };
-        if let Some(selected_chunk) = chunk_data_to_use
-        {
-            let idx = (req_y as usize) * cs * cs + (req_z as usize) * cs + (req_x as usize);
-            return block_list
-                .data
-                .get(&selected_chunk.blocks[idx])
-                .map_or(false, |block| !block.transparent);
-        }
-        // If the neighbor chunk is not loaded yet, we generate the useful face.
-        if let Some(face_name) = face
-        {
-            // If the face is already cached, we use it.
-            let cache_key = (target_chunk_pos, face_name);
-            let temp_chunk = face_cache.entry(cache_key).or_insert_with(|| {
-                let mut chunk_face = load_chunk_face(seed, target_chunk_pos, face_name);
-                // If there are modifications for this chunk, apply them.
-                if let Some(mods) = modifications.get(&target_chunk_pos)
-                {
-                    apply_modifications(&mut chunk_face, mods);
-                }
-                chunk_face
-            });
-            // Check the block type at the requested coordinates in the cached chunk.
-            let idx = (req_y as usize) * cs * cs + (req_z as usize) * cs + (req_x as usize);
-            return block_list
-                .data
-                .get(&temp_chunk.blocks[idx])
-                .map_or(false, |block| !block.transparent);
-        }
-        return true;
-    }
-
-    // Use the chunk's face height bounds to optimize iteration.
-    // The ranges is slightly expanded to ensure we cover the full height of the
-    // faces.
     let min_y = chunk.min_face_height.saturating_sub(1);
     let max_y = (chunk.max_face_height + 1).min(ch - 1);
 
-    // Iterate over all blocks in the chunk, but only in the relevant Y range.
-    for z_local in 0 .. cs
+    // X, Y, Z axes for greedy meshing
+    // 0: +X, 1: -X
+    // 2: +Y, 3: -Y
+    // 4: +Z, 5: -Z
+
+    for face_dir in 0 .. 6
     {
-        for y_local in min_y ..= max_y
+        let dir = FACES[face_dir].0;
+
+        let (axis_u, axis_v, axis_main) = match face_dir
         {
-            for x_local in 0 .. cs
+            0 | 1 => (2, 1, 0), // X faces: U=Z, V=Y
+            2 | 3 => (0, 2, 1), // Y faces: U=X, V=Z
+            4 | 5 => (0, 1, 2), // Z faces: U=X, V=Y
+            _ => unreachable!(),
+        };
+
+        let u_size = if axis_u == 1 { ch } else { cs };
+        let v_size = if axis_v == 1 { ch } else { cs };
+        let main_size = if axis_main == 1 { max_y + 1 } else { cs };
+        let main_start = if axis_main == 1 { min_y } else { 0 };
+
+        for m in main_start .. main_size
+        {
+            let mut mask = vec![vec![None; u_size]; v_size];
+
+            // Build mask for this slice
+            for v in 0 .. v_size
             {
-                // Get the block type at this position.
-                let b = chunk.blocks[y_local * cs * cs + z_local * cs + x_local];
-                if b == BlockType::Air
+                // If V is Y-axis, we can skip if outside min_y..max_y
+                if axis_v == 1 && (v < min_y || v > max_y)
                 {
-                    // Skip air blocks.
                     continue;
                 }
-                // Get the texture handles for each face of this block.
-                let face_tex = &block_list.data[&b].faces;
 
-                // Iterate over each face (+X, -X, +Y, -Y, +Z, -Z).
-                for (face_idx, &(dir, verts, base_uvs)) in FACES.iter().enumerate()
+                for u in 0 .. u_size
                 {
-                    // Determine the coordinates of the block to check in the neighboring space.
-                    let neighbor_check_x = x_local as i32 + dir.x;
-                    let neighbor_check_y = y_local as i32 + dir.y;
-                    let neighbor_check_z = z_local as i32 + dir.z;
-
-                    // Only add the face if the neighbor in that direction is air.
-                    if is_opaque(
-                        neighbor_check_x,
-                        neighbor_check_y,
-                        neighbor_check_z,
-                        chunk,
-                        block_list,
-                        neighbor_chunks,
-                        seed,
-                        cs,
-                        cs_i32,
-                        ch_i32,
-                        &mut face_cache,
-                        modifications,
-                    )
+                    // If U is Y-axis, skip if outside min_y..max_y
+                    if axis_u == 1 && (u < min_y || u > max_y)
                     {
                         continue;
                     }
 
-                    // Get the texture for this face.
-                    let tex = &face_tex[face_idx];
+                    let mut x = 0;
+                    let mut y = 0;
+                    let mut z = 0;
 
-                    // Get or create the mesh data for this texture.
-                    let entry = per_tex.entry(tex.clone()).or_default();
-                    let base_index = entry.0.len() as u32;
-
-                    // Add the 4 vertices for this face.
-                    for i in 0 .. 4
+                    if axis_main == 0
                     {
-                        entry.0.push([
-                            x_local as f32 + verts[i][0],
-                            y_local as f32 + verts[i][1],
-                            z_local as f32 + verts[i][2],
-                        ]);
-                        entry.1.push([dir.x as f32, dir.y as f32, dir.z as f32]);
-                        entry.2.push(base_uvs[i]);
+                        x = m;
+                    }
+                    else if axis_main == 1
+                    {
+                        y = m;
+                    }
+                    else
+                    {
+                        z = m;
+                    }
+                    if axis_u == 0
+                    {
+                        x = u;
+                    }
+                    else if axis_u == 1
+                    {
+                        y = u;
+                    }
+                    else
+                    {
+                        z = u;
+                    }
+                    if axis_v == 0
+                    {
+                        x = v;
+                    }
+                    else if axis_v == 1
+                    {
+                        y = v;
+                    }
+                    else
+                    {
+                        z = v;
                     }
 
-                    // Add the two triangles (6 indices) for this face.
-                    entry.3.extend_from_slice(&[
-                        base_index,
-                        base_index + 1,
-                        base_index + 2,
-                        base_index,
-                        base_index + 2,
-                        base_index + 3,
-                    ]);
+                    let b = chunk.blocks[y * cs * cs + z * cs + x];
+                    if b == BlockType::Air
+                    {
+                        continue;
+                    }
+
+                    // Filter based on pass
+                    let is_block_transparent =
+                        block_list.data.get(&b).map_or(false, |bd| bd.transparent);
+                    if transparent_pass != is_block_transparent
+                    {
+                        continue;
+                    }
+
+                    let nx = x as i32 + dir.x;
+                    let ny = y as i32 + dir.y;
+                    let nz = z as i32 + dir.z;
+
+                    if !is_opaque(
+                        nx,
+                        ny,
+                        nz,
+                        chunk,
+                        block_list,
+                        neighbor_chunks,
+                        cs,
+                        cs_i32,
+                        ch_i32,
+                    )
+                    {
+                        let tex_idx = block_list.data[&b].faces[face_dir];
+                        mask[v][u] = Some(tex_idx);
+                    }
+                }
+            }
+
+            // Greedy mesh the mask
+            for v in 0 .. v_size
+            {
+                for u in 0 .. u_size
+                {
+                    if let Some(tex_idx) = mask[v][u]
+                    {
+                        // Find width
+                        let mut w = 1;
+                        while u + w < u_size && mask[v][u + w] == Some(tex_idx)
+                        {
+                            w += 1;
+                        }
+
+                        // Find height
+                        let mut h = 1;
+                        'height_loop: while v + h < v_size
+                        {
+                            for k in 0 .. w
+                            {
+                                if mask[v + h][u + k] != Some(tex_idx)
+                                {
+                                    break 'height_loop;
+                                }
+                            }
+                            h += 1;
+                        }
+
+                        // Clear mask
+                        for i in 0 .. h
+                        {
+                            for j in 0 .. w
+                            {
+                                mask[v + i][u + j] = None;
+                            }
+                        }
+
+                        // Emit quad
+                        let mut du = [0; 3];
+                        let mut dv = [0; 3];
+                        du[axis_u] = w as i32;
+                        dv[axis_v] = h as i32;
+
+                        let mut base_x = 0;
+                        let mut base_y = 0;
+                        let mut base_z = 0;
+                        if axis_main == 0
+                        {
+                            base_x = m as i32;
+                        }
+                        else if axis_main == 1
+                        {
+                            base_y = m as i32;
+                        }
+                        else
+                        {
+                            base_z = m as i32;
+                        }
+                        if axis_u == 0
+                        {
+                            base_x = u as i32;
+                        }
+                        else if axis_u == 1
+                        {
+                            base_y = u as i32;
+                        }
+                        else
+                        {
+                            base_z = u as i32;
+                        }
+                        if axis_v == 0
+                        {
+                            base_x = v as i32;
+                        }
+                        else if axis_v == 1
+                        {
+                            base_y = v as i32;
+                        }
+                        else
+                        {
+                            base_z = v as i32;
+                        }
+
+                        // Push vertices for the quad
+                        let base_index = pos.len() as u32;
+
+                        let mut p0 = [base_x as f32, base_y as f32, base_z as f32];
+                        let mut p1 = [
+                            base_x as f32 + du[0] as f32,
+                            base_y as f32 + du[1] as f32,
+                            base_z as f32 + du[2] as f32,
+                        ];
+                        let mut p2 = [
+                            base_x as f32 + du[0] as f32 + dv[0] as f32,
+                            base_y as f32 + du[1] as f32 + dv[1] as f32,
+                            base_z as f32 + du[2] as f32 + dv[2] as f32,
+                        ];
+                        let mut p3 = [
+                            base_x as f32 + dv[0] as f32,
+                            base_y as f32 + dv[1] as f32,
+                            base_z as f32 + dv[2] as f32,
+                        ];
+
+                        // Depending on the face direction, we need to adjust the quad vertices to
+                        // align with the voxel boundaries and normals
+                        if dir.x == 1
+                        {
+                            p0[0] += 1.;
+                            p1[0] += 1.;
+                            p2[0] += 1.;
+                            p3[0] += 1.;
+                        }
+                        if dir.y == 1
+                        {
+                            p0[1] += 1.;
+                            p1[1] += 1.;
+                            p2[1] += 1.;
+                            p3[1] += 1.;
+                        }
+                        if dir.z == 1
+                        {
+                            p0[2] += 1.;
+                            p1[2] += 1.;
+                            p2[2] += 1.;
+                            p3[2] += 1.;
+                        }
+
+                        // Winding order adjustment
+                        let reverse = dir.x > 0 || dir.y > 0 || dir.z < 0;
+
+                        if reverse
+                        {
+                            pos.push(p0);
+                            pos.push(p3);
+                            pos.push(p2);
+                            pos.push(p1);
+                        }
+                        else
+                        {
+                            pos.push(p0);
+                            pos.push(p1);
+                            pos.push(p2);
+                            pos.push(p3);
+                        }
+
+                        // Normal
+                        for _ in 0 .. 4
+                        {
+                            norm.push([dir.x as f32, dir.y as f32, dir.z as f32]);
+                        }
+
+                        // UVs based on width and height
+                        let uv_w = w as f32;
+                        let uv_h = h as f32;
+
+                        if reverse
+                        {
+                            uv.push([0.0, uv_h]);
+                            uv.push([0.0, 0.0]);
+                            uv.push([uv_w, 0.0]);
+                            uv.push([uv_w, uv_h]);
+                        }
+                        else
+                        {
+                            uv.push([0.0, uv_h]);
+                            uv.push([uv_w, uv_h]);
+                            uv.push([uv_w, 0.0]);
+                            uv.push([0.0, 0.0]);
+                        }
+
+                        // Vertex color stores texture index in R channel
+                        let c = [tex_idx as f32 / 255.0, 1.0, 1.0, 1.0];
+                        for _ in 0 .. 4
+                        {
+                            color.push(c);
+                        }
+
+                        // Indices
+                        idx.extend_from_slice(&[
+                            base_index,
+                            base_index + 1,
+                            base_index + 2,
+                            base_index,
+                            base_index + 2,
+                            base_index + 3,
+                        ]);
+                    }
                 }
             }
         }
     }
 
-    // Convert the per-texture mesh data into actual Mesh objects.
-    per_tex
-        .into_iter()
-        .map(|(tex, (pos, norm, uv, idx))| {
-            let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, norm);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
-            mesh.insert_indices(Indices::U32(idx));
-            (tex, mesh)
-        })
-        .collect()
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, norm);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, color);
+    mesh.insert_indices(Indices::U32(idx));
+    mesh
 }
 
-// This system remeshes chunks that have changed since the last frame.
 pub fn remesh_changed_chunks(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    map: Res<Map>,
+    global_mat: Res<crate::voxel_material::GlobalMaterials>,
     block_list: Res<BlockList>,
     query: Query<(Entity, &Chunk, Option<&Children>), Changed<Chunk>>,
     new_chunks: Query<Entity, Added<Chunk>>,
@@ -308,29 +507,20 @@ pub fn remesh_changed_chunks(
             crate::world::get_neighbor_chunk_data(chunk.pos, &chunk_map, &all_chunks_query);
 
         // Build the new meshes for the chunk, one per texture.
-        let meshes_by_tex =
-            mesh_chunk(chunk, &*block_list, &neighbor_data, map.seed, &map.modified);
+        let (opaque_mesh, transparent_mesh) = mesh_chunk(chunk, &*block_list, &neighbor_data);
 
         // Spawn one child per (texture, mesh).
         commands.entity(chunk_entity).with_children(|parent| {
-            for (tex_handle, mesh) in meshes_by_tex
-            {
-                let mesh_handle = meshes.add(mesh);
-
-                // Standard material.
-                let mat_handle = materials.add(StandardMaterial {
-                    base_color_texture: Some(tex_handle.clone()),
-                    alpha_mode: AlphaMode::Mask(0.5), // keep cut-out alpha
-                    ..default()
-                });
-
-                // Spawn the mesh.
-                parent.spawn((
-                    Mesh3d(mesh_handle),
-                    MeshMaterial3d(mat_handle),
-                    Visibility::default(),
-                ));
-            }
+            parent.spawn((
+                Mesh3d(meshes.add(opaque_mesh)),
+                MeshMaterial3d(global_mat.opaque.clone()),
+                Visibility::default(),
+            ));
+            parent.spawn((
+                Mesh3d(meshes.add(transparent_mesh)),
+                MeshMaterial3d(global_mat.transparent.clone()),
+                Visibility::default(),
+            ));
         });
     }
 }

@@ -28,17 +28,26 @@ pub struct ChunkMap
 pub struct ChunkLoadState
 {
     pub tasks: HashMap<ChunkPos, Task<(ChunkPos, Chunk)>>,
+    pub last_player_chunk: Option<ChunkPos>,
+    pub sorted_desired: Vec<ChunkPos>,
+    pub desired_set: std::collections::HashSet<ChunkPos>,
 }
 
 // Tracks the meshing state of chunks.
 #[derive(Resource, Default)]
 pub struct ChunkMeshState
 {
-    pub tasks: HashMap<ChunkPos, Task<(ChunkPos, HashMap<Handle<Image>, Mesh>)>>,
+    pub tasks: HashMap<ChunkPos, Task<(ChunkPos, Mesh, Mesh)>>,
 }
 
-// This system manages the loading and unloading of chunks based on their
-// position.
+// Tracks chunks that are loaded but waiting to be meshed (because they wait for neighbors).
+#[derive(Resource, Default)]
+pub struct ChunkMeshQueue
+{
+    pub queue: std::collections::HashSet<ChunkPos>,
+}
+
+// This system manages the loading and unloading of chunks based on their position.
 pub fn manage_chunk_loading(
     mut commands: Commands,
     map: Res<Map>,
@@ -105,41 +114,50 @@ pub fn manage_chunk_loading(
 
     // The player's chunk's position will be used to determine the chunks that
     // should be loaded right now. This is where the render distance is useful.
-    let mut desired = Vec::new();
-    for dz in -RENDER_DISTANCE ..= RENDER_DISTANCE
+    if chunk_state.last_player_chunk != Some(player_chunk)
     {
-        for dx in -RENDER_DISTANCE ..= RENDER_DISTANCE
+        let mut desired = Vec::new();
+        let mut desired_set = std::collections::HashSet::new();
+        for dz in -RENDER_DISTANCE ..= RENDER_DISTANCE
         {
-            if sqrt((dx * dx + dz * dz) as f32) > RENDER_DISTANCE as f32
+            for dx in -RENDER_DISTANCE ..= RENDER_DISTANCE
             {
-                // Skip chunks that are too far, to create a circular rendered terrain.
-                continue;
+                if sqrt((dx * dx + dz * dz) as f32) > RENDER_DISTANCE as f32
+                {
+                    // Skip chunks that are too far, to create a circular rendered terrain.
+                    continue;
+                }
+                let pos = ChunkPos { x: player_chunk.x + dx, y: player_chunk.y + dz };
+                desired.push(pos);
+                desired_set.insert(pos);
             }
-            let pos = ChunkPos { x: player_chunk.x + dx, y: player_chunk.y + dz };
-            desired.push(pos);
         }
-    }
 
-    // Sort desired chunks by distance from player for priority loading.
-    // Closer chunks will be loaded first.
-    desired.sort_by(|a, b| {
-        let dist_a = sqrt(
-            ((a.x - player_chunk.x) * (a.x - player_chunk.x)
-                + (a.y - player_chunk.y) * (a.y - player_chunk.y)) as f32,
-        );
-        let dist_b = sqrt(
-            ((b.x - player_chunk.x) * (b.x - player_chunk.x)
-                + (b.y - player_chunk.y) * (b.y - player_chunk.y)) as f32,
-        );
-        dist_a
-            .partial_cmp(&dist_b)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+        // Sort desired chunks by distance from player for priority loading.
+        // Closer chunks will be loaded first.
+        desired.sort_by(|a, b| {
+            let dist_a = sqrt(
+                ((a.x - player_chunk.x) * (a.x - player_chunk.x)
+                    + (a.y - player_chunk.y) * (a.y - player_chunk.y)) as f32,
+            );
+            let dist_b = sqrt(
+                ((b.x - player_chunk.x) * (b.x - player_chunk.x)
+                    + (b.y - player_chunk.y) * (b.y - player_chunk.y)) as f32,
+            );
+            dist_a
+                .partial_cmp(&dist_b)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        chunk_state.sorted_desired = desired;
+        chunk_state.desired_set = desired_set;
+        chunk_state.last_player_chunk = Some(player_chunk);
+    }
 
     // Chunks that are currenlty loaded but are not wanted will be unloaded.
     for old_pos in chunk_map.loaded_chunks.keys().cloned().collect::<Vec<_>>()
     {
-        if !desired.contains(&old_pos)
+        if !chunk_state.desired_set.contains(&old_pos)
         {
             // Despawn the entity for the chunk and remove it from the map.
             if let Some(e) = chunk_map.loaded_chunks.remove(&old_pos)
@@ -152,7 +170,7 @@ pub fn manage_chunk_loading(
     }
 
     // Chunks that are currently unloaded but are wanted will be loaded.
-    for pos in desired
+    for pos in chunk_state.sorted_desired.clone()
     {
         // Skip if chunk is already loaded or being loaded.
         if chunk_map.loaded_chunks.contains_key(&pos) || chunk_state.tasks.contains_key(&pos)
@@ -186,7 +204,8 @@ pub fn manage_chunk_loading(
         if let Ok(mut vis) = visibility_query.get_mut(entity)
         {
             let should_be_visible = is_chunk_visible(*pos);
-            let new_vis = if should_be_visible { Visibility::Inherited } else { Visibility::Hidden };
+            let new_vis =
+                if should_be_visible { Visibility::Inherited } else { Visibility::Hidden };
             if *vis != new_vis
             {
                 *vis = new_vis;
@@ -228,10 +247,7 @@ pub fn process_chunk_tasks(
     mut commands: Commands,
     mut chunk_map: ResMut<ChunkMap>,
     mut chunk_state: ResMut<ChunkLoadState>,
-    mut mesh_state: ResMut<ChunkMeshState>,
-    map: Res<Map>,
-    block_list: Res<BlockList>,
-    all_chunks_query: Query<&Chunk>,
+    mut mesh_queue: ResMut<ChunkMeshQueue>,
 )
 {
     use std::task::{Context, Poll};
@@ -245,7 +261,6 @@ pub fn process_chunk_tasks(
         let mut cx = Context::from_waker(waker);
         if let Poll::Ready((chunk_pos, chunk)) = std::pin::Pin::new(task).poll(&mut cx)
         {
-            let chunk_clone = chunk.clone();
             let e = commands
                 .spawn((
                     Transform::from_translation(Vec3::new(
@@ -258,27 +273,7 @@ pub fn process_chunk_tasks(
                 ))
                 .id();
             chunk_map.loaded_chunks.insert(chunk_pos, e);
-            let chunk_pos_copy = chunk_pos;
-            let block_list = block_list.clone();
-            let task_pool = AsyncComputeTaskPool::get();
-            let seed_copy = map.seed;
-            let modifs_copy = map.modified.clone();
-
-            // Prepare neighbor data for mesh_chunk.
-            let neighbor_chunks_data =
-                get_neighbor_chunk_data(chunk_pos, &chunk_map, &all_chunks_query);
-
-            let mesh_task = task_pool.spawn(async move {
-                let meshes_by_tex = mesh_chunk(
-                    &chunk_clone,
-                    &block_list,
-                    &neighbor_chunks_data,
-                    seed_copy,
-                    &modifs_copy,
-                );
-                (chunk_pos_copy, meshes_by_tex)
-            });
-            mesh_state.tasks.insert(chunk_pos, mesh_task);
+            mesh_queue.queue.insert(chunk_pos);
             completed.push(task_pos);
         }
     }
@@ -288,12 +283,80 @@ pub fn process_chunk_tasks(
     }
 }
 
+// This system checks if chunks in the mesh queue have all 4 horizontal neighbors loaded.
+// If so, it removes them from the queue and spawns a meshing task.
+pub fn queue_chunk_meshes(
+    mut mesh_queue: ResMut<ChunkMeshQueue>,
+    mut mesh_state: ResMut<ChunkMeshState>,
+    chunk_map: Res<ChunkMap>,
+    block_list: Res<BlockList>,
+    all_chunks_query: Query<&Chunk>,
+)
+{
+    let mut to_mesh = Vec::new();
+
+    // Check which chunks have all neighbors loaded.
+    for &pos in mesh_queue.queue.iter()
+    {
+        let neighbor_offsets = [
+            ChunkPos { x: -1, y: 0 },
+            ChunkPos { x: 1, y: 0 },
+            ChunkPos { x: 0, y: -1 },
+            ChunkPos { x: 0, y: 1 },
+        ];
+
+        let mut all_loaded = true;
+        for offset in neighbor_offsets
+        {
+            if !chunk_map.loaded_chunks.contains_key(&(pos + offset))
+            {
+                all_loaded = false;
+                break;
+            }
+        }
+
+        if all_loaded
+        {
+            to_mesh.push(pos);
+        }
+    }
+
+    let task_pool = AsyncComputeTaskPool::get();
+
+    // Spawn meshing tasks for chunks that have all neighbors.
+    for pos in to_mesh
+    {
+        mesh_queue.queue.remove(&pos);
+
+        if let Some(&entity) = chunk_map.loaded_chunks.get(&pos)
+        {
+            if let Ok(chunk_component) = all_chunks_query.get(entity)
+            {
+                let chunk_clone = chunk_component.clone();
+                let block_list = block_list.clone();
+                let chunk_pos_copy = pos;
+
+                let neighbor_chunks_data =
+                    get_neighbor_chunk_data(pos, &chunk_map, &all_chunks_query);
+
+                let mesh_task = task_pool.spawn(async move {
+                    let (opaque_mesh, transparent_mesh) =
+                        mesh_chunk(&chunk_clone, &block_list, &neighbor_chunks_data);
+                    (chunk_pos_copy, opaque_mesh, transparent_mesh)
+                });
+
+                mesh_state.tasks.insert(pos, mesh_task);
+            }
+        }
+    }
+}
+
 // This system processes completed chunk meshing tasks.
 pub fn process_chunk_mesh_tasks(
     mut commands: Commands,
     mut mesh_state: ResMut<ChunkMeshState>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    global_mat: Res<crate::voxel_material::GlobalMaterials>,
     chunk_map: Res<ChunkMap>,
 )
 {
@@ -306,27 +369,26 @@ pub fn process_chunk_mesh_tasks(
     {
         let waker = noop_waker_ref();
         let mut cx = Context::from_waker(waker);
-        if let Poll::Ready((chunk_pos, meshes_by_tex)) = std::pin::Pin::new(task).poll(&mut cx)
+        if let Poll::Ready((chunk_pos, opaque_mesh, transparent_mesh)) =
+            std::pin::Pin::new(task).poll(&mut cx)
         {
             if let Some(&chunk_entity) = chunk_map.loaded_chunks.get(&chunk_pos)
             {
-                for (tex_handle, mesh) in meshes_by_tex
-                {
-                    let mat_handle = materials.add(StandardMaterial {
-                        base_color_texture: Some(tex_handle.clone()),
-                        alpha_mode: AlphaMode::Mask(0.5),
-                        ..default()
-                    });
-                    let mesh_handle = meshes.add(mesh);
+                let opaque_handle = meshes.add(opaque_mesh);
+                let transparent_handle = meshes.add(transparent_mesh);
 
-                    commands.entity(chunk_entity).with_children(|c| {
-                        c.spawn((
-                            Mesh3d(mesh_handle),
-                            MeshMaterial3d(mat_handle),
-                            Visibility::default(),
-                        ));
-                    });
-                }
+                commands.entity(chunk_entity).with_children(|c| {
+                    c.spawn((
+                        Mesh3d(opaque_handle),
+                        MeshMaterial3d(global_mat.opaque.clone()),
+                        Visibility::default(),
+                    ));
+                    c.spawn((
+                        Mesh3d(transparent_handle),
+                        MeshMaterial3d(global_mat.transparent.clone()),
+                        Visibility::default(),
+                    ));
+                });
             }
             completed.push(chunk_pos);
         }
