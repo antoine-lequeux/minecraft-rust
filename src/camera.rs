@@ -1,18 +1,15 @@
 use bevy::{input::mouse::MouseMotion, prelude::*};
 
 use crate::{
-    chunks::{Chunk, Map, Modification, calculate_face_heights},
+    chunks::{Chunk, Map, calculate_face_heights},
+    get_base_block,
     types::{BlockType, CHUNK_HEIGHT, CHUNK_SIZE, ChunkPos},
     world::ChunkMap,
 };
 
 // Helper function to check if a block position is on a chunk border and return
 // adjacent chunk positions.
-fn get_adjacent_chunks_for_border_block(
-    local_x: i32,
-    local_z: i32,
-    chunk_pos: ChunkPos,
-) -> Vec<ChunkPos>
+fn get_adjacent_chunks_for_border_block(local_x: i32, local_z: i32, chunk_pos: ChunkPos) -> Vec<ChunkPos>
 {
     let mut adjacent_chunks = Vec::new();
     let chunk_size = CHUNK_SIZE as i32;
@@ -127,10 +124,7 @@ pub fn fly_camera_movement(
 }
 
 // This system manages mouse input and pans the camera.
-pub fn mouse_look(
-    mut motion: EventReader<MouseMotion>,
-    mut query: Query<(&mut FlyCam, &mut Transform)>,
-)
+pub fn mouse_look(mut motion: EventReader<MouseMotion>, mut query: Query<(&mut FlyCam, &mut Transform)>)
 {
     for ev in motion.read()
     {
@@ -227,32 +221,35 @@ pub fn block_interaction(
                         {
                             // Destroy the block.
                             chunk.blocks[idx] = BlockType::Air;
-                            map.modified
-                                .entry(cpos)
-                                .or_default()
-                                .push(Modification { index: idx, new: BlockType::Air });
+                            let base_block = get_base_block(map.seed, cpos, lx as usize, by as usize, lz as usize);
+                            let modifs = map.modified.entry(cpos).or_default();
+                            if base_block == BlockType::Air
+                            {
+                                modifs.remove(&idx);
+                            }
+                            else
+                            {
+                                modifs.insert(idx, BlockType::Air);
+                            }
 
                             // Recalculate face heights after block destruction.
-                            let (min_face_height, max_face_height) =
-                                calculate_face_heights(&chunk.blocks);
+                            let (min_face_height, max_face_height) = calculate_face_heights(&chunk.blocks);
                             chunk.min_face_height = min_face_height;
                             chunk.max_face_height = max_face_height;
 
                             // Check if the block is on a chunk border and mark adjacent chunks for
                             // remeshing.
-                            let adjacent_chunks =
-                                get_adjacent_chunks_for_border_block(lx, lz, cpos);
+                            let adjacent_chunks = get_adjacent_chunks_for_border_block(lx, lz, cpos);
                             for adj_chunk_pos in adjacent_chunks
                             {
                                 if chunk_map.loaded_chunks.contains_key(&adj_chunk_pos)
                                 {
-                                    // Add a dummy modification to trigger remeshing of adjacent
-                                    // chunk.
-                                    // We use an impossible index to indicate this is just for
-                                    // remeshing.
-                                    map.modified.entry(adj_chunk_pos).or_default().push(
-                                        Modification { index: usize::MAX, new: BlockType::Air },
-                                    );
+                                    // Add a dummy modification to trigger remeshing of adjacent chunk.
+                                    // We use an impossible index to indicate this is just for remeshing.
+                                    map.modified
+                                        .entry(adj_chunk_pos)
+                                        .or_default()
+                                        .insert(usize::MAX, BlockType::Air);
                                 }
                             }
                             return;
@@ -273,17 +270,28 @@ pub fn block_interaction(
                                     let last_lz = last_z - last_cz * CHUNK_SIZE as i32;
 
                                     // Calculate the index in the target chunk's blocks array.
-                                    let last_idx = (last_y as usize)
-                                        * (CHUNK_SIZE as usize)
-                                        * (CHUNK_SIZE as usize)
+                                    let last_idx = (last_y as usize) * (CHUNK_SIZE as usize) * (CHUNK_SIZE as usize)
                                         + (last_lz as usize) * (CHUNK_SIZE as usize)
                                         + (last_lx as usize); // Place the block at the last air position.
                                     target_chunk.blocks[last_idx] = BlockType::OakLeaves;
 
                                     let target_chunk_pos = ChunkPos { x: last_cx, y: last_cz };
-                                    map.modified.entry(target_chunk_pos).or_default().push(
-                                        Modification { index: last_idx, new: BlockType::OakLeaves },
+                                    let base_block = crate::chunks::get_base_block(
+                                        map.seed,
+                                        target_chunk_pos,
+                                        last_lx as usize,
+                                        last_y as usize,
+                                        last_lz as usize,
                                     );
+                                    let modifs = map.modified.entry(target_chunk_pos).or_default();
+                                    if base_block == BlockType::OakLeaves
+                                    {
+                                        modifs.remove(&last_idx);
+                                    }
+                                    else
+                                    {
+                                        modifs.insert(last_idx, BlockType::OakLeaves);
+                                    }
 
                                     // Recalculate face heights after block placement.
                                     let (min_face_height, max_face_height) =
@@ -293,25 +301,18 @@ pub fn block_interaction(
 
                                     // Check if the block is on a chunk border and mark adjacent
                                     // chunks for remeshing.
-                                    let adjacent_chunks = get_adjacent_chunks_for_border_block(
-                                        last_lx,
-                                        last_lz,
-                                        target_chunk_pos,
-                                    );
+                                    let adjacent_chunks =
+                                        get_adjacent_chunks_for_border_block(last_lx, last_lz, target_chunk_pos);
                                     for adj_chunk_pos in adjacent_chunks
                                     {
                                         if chunk_map.loaded_chunks.contains_key(&adj_chunk_pos)
                                         {
-                                            // Add a dummy modification to trigger remeshing of
-                                            // adjacent chunk.
-                                            // We use an impossible index to indicate this is just
-                                            // for remeshing.
-                                            map.modified.entry(adj_chunk_pos).or_default().push(
-                                                Modification {
-                                                    index: usize::MAX,
-                                                    new: BlockType::Air,
-                                                },
-                                            );
+                                            // Add a dummy modification to trigger remeshing of adjacent chunk.
+                                            // We use an impossible index to indicate this is just for remeshing.
+                                            map.modified
+                                                .entry(adj_chunk_pos)
+                                                .or_default()
+                                                .insert(usize::MAX, BlockType::Air);
                                         }
                                     }
                                 }

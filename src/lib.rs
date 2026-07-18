@@ -7,6 +7,7 @@ pub mod types;
 pub mod ui;
 pub mod voxel_material;
 pub mod world;
+pub mod saves;
 
 pub use blocks::*;
 pub use camera::*;
@@ -17,3 +18,4 @@ pub use types::*;
 pub use ui::*;
 pub use voxel_material::*;
 pub use world::*;
+pub use saves::*;

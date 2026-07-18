@@ -35,7 +35,7 @@ fn main()
     app.init_state::<GameState>();
 
     app.init_resource::<BlockList>();
-    app.insert_resource(Map::new(0x12345678));
+    app.init_resource::<Map>();
     app.init_resource::<MenuStack>();
     app.init_resource::<ChunkMap>();
     app.init_resource::<ChunkLoadState>();
@@ -51,7 +51,7 @@ fn main()
             process_chunk_mesh_tasks,
         )
             .chain()
-            .run_if(in_state(GameState::InGame)),
+            .run_if(in_state(GameState::InGame).or(in_state(GameState::LoadingScreen))),
     );
     app.add_systems(Update, fly_camera_movement.run_if(in_state(GameState::InGame)));
     // app.add_systems(Update, count_chunks);
@@ -64,16 +64,28 @@ fn main()
     );
     app.add_systems(OnEnter(GameState::MainMenu), on_enter_main_menu);
     app.add_systems(OnExit(GameState::MainMenu), on_exit_main_menu);
+    app.add_systems(OnEnter(GameState::NewGameMenu), on_enter_new_game);
+    app.add_systems(OnExit(GameState::NewGameMenu), on_exit_new_game);
+    app.add_systems(OnEnter(GameState::LoadGameMenu), on_enter_load_game);
+    app.add_systems(OnExit(GameState::LoadGameMenu), on_exit_load_game);
     app.add_systems(OnEnter(GameState::Settings), on_enter_settings);
     app.add_systems(OnExit(GameState::Settings), on_exit_settings);
+    app.add_systems(OnEnter(GameState::LoadingScreen), on_enter_loading_screen);
+    app.add_systems(OnExit(GameState::LoadingScreen), on_exit_loading_screen);
     app.add_systems(OnEnter(GameState::InGame), on_enter_in_game);
     app.add_systems(OnExit(GameState::InGame), on_exit_in_game);
-    app.add_systems(OnEnter(GameState::Paused), on_enter_pause_menu);
-    app.add_systems(OnExit(GameState::Paused), on_exit_pause_menu);
+    app.add_systems(OnEnter(GameState::Paused), on_enter_paused);
+    app.add_systems(OnExit(GameState::Paused), on_exit_paused);
 
     app.add_systems(Update, text_update_system.run_if(in_state(GameState::InGame)));
+    app.add_systems(
+        Update,
+        update_loading_screen_progress.run_if(in_state(GameState::LoadingScreen)),
+    );
     app.add_systems(Update, button_system);
     app.add_systems(Update, keyboard_input_system);
+    app.add_systems(Update, handle_world_name_input.run_if(in_state(GameState::NewGameMenu)));
+    app.add_systems(Update, save_on_exit.run_if(bevy::prelude::on_event::<bevy::app::AppExit>));
 
     app.add_systems(Startup, setup);
 

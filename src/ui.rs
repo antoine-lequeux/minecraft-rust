@@ -4,7 +4,10 @@ use bevy::{
     prelude::*,
 };
 
-use crate::gamestate::{GameState, MenuStack};
+use crate::{
+    InGameUI, PendingGameLoad,
+    gamestate::{GameState, MenuStack},
+};
 
 const MAIN_FONT: &str = "fonts/minecraft.otf";
 
@@ -112,6 +115,8 @@ pub enum ButtonAction
     Quit,
     MainMenu,
     Back,
+    CreateGame,
+    LoadSpecificGame(String),
 }
 
 // Helper function to create a button with a specific marker component.
@@ -146,7 +151,7 @@ pub fn setup_ingame_ui(mut commands: Commands, assets: Res<AssetServer>)
 {
     // Crosshair.
     commands.spawn((
-        crate::gamestate::InGameUI,
+        InGameUI,
         Sprite::from_image(assets.load("textures/crosshair.png")),
         Transform::from_translation(Transform::IDENTITY.translation + Vec3::new(0.0, 0.0, 1.0)),
     ));
@@ -154,7 +159,7 @@ pub fn setup_ingame_ui(mut commands: Commands, assets: Res<AssetServer>)
     // FPS counter.
     commands
         .spawn((
-            crate::gamestate::InGameUI,
+            InGameUI,
             Text::new("FPS: "),
             TextFont { font: assets.load(MAIN_FONT), font_size: 30.0, ..default() },
         ))
@@ -166,6 +171,7 @@ pub fn setup_ingame_ui(mut commands: Commands, assets: Res<AssetServer>)
 }
 
 pub fn button_system(
+    mut commands: Commands,
     mut interaction_query: Query<
         (&Interaction, &mut BackgroundColor, &mut BorderColor, &ButtonAction),
         (Changed<Interaction>, With<Button>),
@@ -190,9 +196,22 @@ pub fn button_system(
                 {
                     ButtonAction::NewWorld =>
                     {
-                        next_state.set(GameState::InGame);
+                        next_state.set(GameState::NewGameMenu);
                     },
-                    ButtonAction::LoadWorld => (),
+                    ButtonAction::LoadWorld =>
+                    {
+                        next_state.set(GameState::LoadGameMenu);
+                    },
+                    ButtonAction::CreateGame =>
+                    {
+                        commands.insert_resource(PendingGameLoad::NewGame);
+                        next_state.set(GameState::LoadingScreen);
+                    },
+                    ButtonAction::LoadSpecificGame(file_name) =>
+                    {
+                        commands.insert_resource(PendingGameLoad::LoadGame(file_name.clone()));
+                        next_state.set(GameState::LoadingScreen);
+                    },
                     ButtonAction::Settings =>
                     {
                         next_state.set(GameState::Settings);

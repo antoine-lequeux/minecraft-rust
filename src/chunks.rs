@@ -17,14 +17,6 @@ pub struct Chunk
 }
 
 // Each chunk is always loaded using the seed, instead of being saved.
-// But we then need to store the modifications that were applied to each chunk,
-// else they will be lost when the player is too far.
-#[derive(Clone)]
-pub struct Modification
-{
-    pub index: usize,
-    pub new: BlockType,
-}
 
 // The Map resource. It stores the seed for this world, and a list of
 // modifications that were applied to each chunk.
@@ -32,14 +24,27 @@ pub struct Modification
 pub struct Map
 {
     pub seed: u32,
-    pub modified: HashMap<ChunkPos, Vec<Modification>>,
+    pub world_name: String,
+    pub save_file_name: String,
+    pub player_position: [f32; 3],
+    pub player_yaw: f32,
+    pub player_pitch: f32,
+    pub modified: HashMap<ChunkPos, HashMap<usize, BlockType>>,
 }
 
 impl Map
 {
-    pub fn new(seed: u32) -> Self
+    pub fn new(seed: u32, world_name: String, save_file_name: String) -> Self
     {
-        return Map { seed, modified: HashMap::new() };
+        return Map {
+            seed,
+            world_name,
+            save_file_name,
+            player_position: [0.0, 100.0, 0.0],
+            player_yaw: 0.0,
+            player_pitch: 0.0,
+            modified: HashMap::new(),
+        };
     }
 }
 
@@ -150,20 +155,9 @@ fn create_simplex(seed: u32) -> OpenSimplex
     return OpenSimplex::new(seed);
 }
 
-// Generate one column at (x,z) using the terrain settings.
-fn generate_column(
-    simplex: &OpenSimplex,
-    pos: ChunkPos,
-    x: usize,
-    z: usize,
-    blocks: &mut [BlockType; TOTAL],
-    terrain_heights: &mut [[usize; CHUNK_SIZE as usize]; CHUNK_SIZE as usize],
-    config: &TerrainConfig,
-)
+// Get the terrain height for a specific column.
+fn get_terrain_height(simplex: &OpenSimplex, pos: ChunkPos, x: usize, z: usize, config: &TerrainConfig) -> usize
 {
-    let cs = CHUNK_SIZE as usize;
-    let cs_sq = cs * cs;
-
     // World coordinates of this block column.
     let world_x = pos.x * CHUNK_SIZE as i32 + x as i32;
     let world_z = pos.y * CHUNK_SIZE as i32 + z as i32;
@@ -171,8 +165,7 @@ fn generate_column(
     let wz = world_z as f64;
 
     // Sample continental noise to determine if this is a mountain or plains area.
-    let raw_continent =
-        simplex.get([wx * config.continent_frequency, wz * config.continent_frequency]);
+    let raw_continent = simplex.get([wx * config.continent_frequency, wz * config.continent_frequency]);
     let blend_weight = terrain_blend_weight(raw_continent, config);
 
     // Generate mountain noise.
@@ -187,8 +180,7 @@ fn generate_column(
     );
 
     // Convert mountain noise [-1,1] to real height.
-    let mountain_height =
-        config.mountain_base_height + ((mountain_noise + 1.0) * 0.5) * config.mountain_amplitude;
+    let mountain_height = config.mountain_base_height + ((mountain_noise + 1.0) * 0.5) * config.mountain_amplitude;
 
     // Generate plains terrain using gentler fBm.
     let plains_noise = generate_fbm(
@@ -202,16 +194,31 @@ fn generate_column(
     );
 
     // Convert plains noise [-1,1] to real height.
-    let plains_height =
-        config.plains_base_height + ((plains_noise + 1.0) * 0.5) * config.plains_amplitude;
+    let plains_height = config.plains_base_height + ((plains_noise + 1.0) * 0.5) * config.plains_amplitude;
 
     // Blend between mountain and plains terrain.
     let normalized_height = blend_weight * mountain_height + (1.0 - blend_weight) * plains_height;
 
     // Convert to world height.
-    let world_height =
-        (normalized_height * CHUNK_HEIGHT as f64).clamp(0.0, CHUNK_HEIGHT as f64 - 1.0);
-    let terrain_height = world_height as usize;
+    let world_height = (normalized_height * CHUNK_HEIGHT as f64).clamp(0.0, CHUNK_HEIGHT as f64 - 1.0);
+    return world_height as usize;
+}
+
+// Generate one column at (x,z) using the terrain settings.
+fn generate_column(
+    simplex: &OpenSimplex,
+    pos: ChunkPos,
+    x: usize,
+    z: usize,
+    blocks: &mut [BlockType; TOTAL],
+    terrain_heights: &mut [[usize; CHUNK_SIZE as usize]; CHUNK_SIZE as usize],
+    config: &TerrainConfig,
+)
+{
+    let cs = CHUNK_SIZE as usize;
+    let cs_sq = cs * cs;
+
+    let terrain_height = get_terrain_height(simplex, pos, x, z, config);
     terrain_heights[z][x] = terrain_height;
 
     // Fill blocks based on height and water level.
@@ -295,13 +302,7 @@ pub fn load_raw_chunk(seed: u32, pos: ChunkPos) -> Chunk
     }
 
     let (min_face_height, max_face_height) = calculate_face_heights(&blocks);
-    return Chunk {
-        pos,
-        blocks: blocks.into(),
-        min_face_height,
-        max_face_height,
-        remesh_flag: false,
-    };
+    return Chunk { pos, blocks: blocks.into(), min_face_height, max_face_height, remesh_flag: false };
 }
 
 // Helper function to calculate the minimal and maximal heights for face drawing.
@@ -350,25 +351,69 @@ pub fn calculate_face_heights(blocks: &[BlockType; TOTAL]) -> (usize, usize)
 }
 
 // This function applies any saved modifications to a chunk after it is loaded.
-pub fn apply_modifications(chunk: &mut Chunk, modifications: &[Modification])
+pub fn get_base_block(seed: u32, pos: ChunkPos, x: usize, y: usize, z: usize) -> BlockType
 {
-    for modification in modifications
-    {
-        // Skip dummy modifications used only for triggering remeshing.
-        if modification.index == usize::MAX
-        {
-            continue;
-        }
-        chunk.blocks[modification.index] = modification.new;
-    }
-
-    // Recalculate face heights after applying modifications.
-    let (min_face_height, max_face_height) = calculate_face_heights(&chunk.blocks);
-    chunk.min_face_height = min_face_height;
-    chunk.max_face_height = max_face_height;
+    let config = TerrainConfig::default();
+    let simplex = create_simplex(seed);
+    let terrain_height = get_terrain_height(&simplex, pos, x, z, &config);
+    let water_level = (config.water_level * CHUNK_HEIGHT as f64) as usize;
+    get_base_block_with_config(terrain_height, y, water_level)
 }
 
-pub fn count_chunks(query: Query<(), With<Chunk>>)
+fn get_base_block_with_config(terrain_height: usize, y: usize, water_level: usize) -> BlockType
 {
-    println!("Loaded chunks: {}", query.iter().count());
+    let is_underwater_surface = y < terrain_height
+        && y >= terrain_height.saturating_sub(2)
+        && y <= water_level
+        && y >= water_level.saturating_sub(4);
+
+    if y < terrain_height
+    {
+        if is_underwater_surface
+        {
+            return BlockType::Clay;
+        }
+        else if y < terrain_height.saturating_sub(4)
+        {
+            return BlockType::Stone;
+        }
+        else
+        {
+            return BlockType::Dirt;
+        }
+    }
+    else if y == terrain_height
+    {
+        if y <= water_level
+        {
+            return BlockType::Sand;
+        }
+        else
+        {
+            return BlockType::Grass;
+        }
+    }
+    else if y <= water_level
+    {
+        return BlockType::Water;
+    }
+    else
+    {
+        return BlockType::Air;
+    }
+}
+
+pub fn apply_modifications(chunk: &mut Chunk, modifications: &HashMap<usize, BlockType>)
+{
+    for (&index, &new_block) in modifications
+    {
+        chunk.blocks[index] = new_block;
+
+        let y = index / (CHUNK_SIZE as usize * CHUNK_SIZE as usize);
+        if new_block != BlockType::Air
+        {
+            chunk.max_face_height = chunk.max_face_height.max(y);
+            chunk.min_face_height = chunk.min_face_height.min(y);
+        }
+    }
 }

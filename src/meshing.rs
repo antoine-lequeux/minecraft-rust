@@ -7,8 +7,10 @@ use bevy::{
 };
 
 use crate::{
+    ChunkMap, GlobalMaterials,
     blocks::BlockList,
     chunks::{Chunk, Map},
+    get_neighbor_chunk_data,
     types::{BlockType, CHUNK_HEIGHT, CHUNK_SIZE, ChunkPos},
 };
 
@@ -95,14 +97,8 @@ fn is_opaque(
         req_z -= cs_i32;
     }
 
-    let chunk_data_to_use = if target_chunk_pos == chunk.pos
-    {
-        Some(chunk)
-    }
-    else
-    {
-        neighbor_chunks.get(&target_chunk_pos)
-    };
+    let chunk_data_to_use =
+        if target_chunk_pos == chunk.pos { Some(chunk) } else { neighbor_chunks.get(&target_chunk_pos) };
 
     if let Some(selected_chunk) = chunk_data_to_use
     {
@@ -116,11 +112,7 @@ fn is_opaque(
     return false;
 }
 
-pub fn mesh_chunk(
-    chunk: &Chunk,
-    block_list: &BlockList,
-    neighbor_chunks: &HashMap<ChunkPos, Chunk>,
-) -> (Mesh, Mesh)
+pub fn mesh_chunk(chunk: &Chunk, block_list: &BlockList, neighbor_chunks: &HashMap<ChunkPos, Chunk>) -> (Mesh, Mesh)
 {
     let opaque_mesh = build_mesh_for(false, chunk, block_list, neighbor_chunks);
     let transparent_mesh = build_mesh_for(true, chunk, block_list, neighbor_chunks);
@@ -239,8 +231,7 @@ fn build_mesh_for(
                     }
 
                     // Filter based on pass
-                    let is_block_transparent =
-                        block_list.data.get(&b).map_or(false, |bd| bd.transparent);
+                    let is_block_transparent = block_list.data.get(&b).map_or(false, |bd| bd.transparent);
                     if transparent_pass != is_block_transparent
                     {
                         continue;
@@ -250,17 +241,7 @@ fn build_mesh_for(
                     let ny = y as i32 + dir.y;
                     let nz = z as i32 + dir.z;
 
-                    if !is_opaque(
-                        nx,
-                        ny,
-                        nz,
-                        chunk,
-                        block_list,
-                        neighbor_chunks,
-                        cs,
-                        cs_i32,
-                        ch_i32,
-                    )
+                    if !is_opaque(nx, ny, nz, chunk, block_list, neighbor_chunks, cs, cs_i32, ch_i32)
                     {
                         let tex_idx = block_list.data[&b].faces[face_dir];
                         mask[v][u] = Some(tex_idx);
@@ -472,11 +453,11 @@ fn build_mesh_for(
 pub fn remesh_changed_chunks(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    global_mat: Res<crate::voxel_material::GlobalMaterials>,
+    global_mat: Res<GlobalMaterials>,
     block_list: Res<BlockList>,
     query: Query<(Entity, &Chunk, Option<&Children>), Changed<Chunk>>,
     new_chunks: Query<Entity, Added<Chunk>>,
-    chunk_map: Res<crate::world::ChunkMap>,
+    chunk_map: Res<ChunkMap>,
     all_chunks_query: Query<&Chunk>,
 )
 {
@@ -503,8 +484,7 @@ pub fn remesh_changed_chunks(
         }
 
         // Get neighboring chunks data.
-        let neighbor_data =
-            crate::world::get_neighbor_chunk_data(chunk.pos, &chunk_map, &all_chunks_query);
+        let neighbor_data = get_neighbor_chunk_data(chunk.pos, &chunk_map, &all_chunks_query);
 
         // Build the new meshes for the chunk, one per texture.
         let (opaque_mesh, transparent_mesh) = mesh_chunk(chunk, &*block_list, &neighbor_data);
@@ -527,11 +507,7 @@ pub fn remesh_changed_chunks(
 
 // This system triggers remeshing for chunks that have modifications requiring
 // remesh (like when adjacent chunks have border blocks modified).
-pub fn trigger_chunk_remeshing(
-    mut map: ResMut<Map>,
-    chunk_map: Res<crate::world::ChunkMap>,
-    mut chunks: Query<&mut Chunk>,
-)
+pub fn trigger_chunk_remeshing(mut map: ResMut<Map>, chunk_map: Res<ChunkMap>, mut chunks: Query<&mut Chunk>)
 {
     let mut chunks_to_clean = Vec::new();
 
@@ -539,7 +515,7 @@ pub fn trigger_chunk_remeshing(
     {
         // Check if this chunk has any dummy modifications (used for triggering
         // remeshing).
-        let has_remesh_trigger = modifications.iter().any(|m| m.index == usize::MAX);
+        let has_remesh_trigger = modifications.contains_key(&usize::MAX);
 
         if has_remesh_trigger
         {
@@ -562,7 +538,7 @@ pub fn trigger_chunk_remeshing(
     {
         if let Some(modifications) = map.modified.get_mut(&chunk_pos)
         {
-            modifications.retain(|m| m.index != usize::MAX);
+            modifications.remove(&usize::MAX);
 
             // If no real modifications remain, remove the entry completely.
             if modifications.is_empty()

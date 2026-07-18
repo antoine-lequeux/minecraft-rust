@@ -7,11 +7,12 @@ use bevy::{
 };
 
 use crate::{
+    GlobalMaterials,
     blocks::BlockList,
     camera::FlyCam,
     chunks::{Chunk, Map, apply_modifications, load_raw_chunk},
     meshing::mesh_chunk,
-    types::{CHUNK_HEIGHT, CHUNK_SIZE, ChunkPos, MAX_CONCURRENT_LOADS, RENDER_DISTANCE},
+    types::{CHUNK_SIZE, ChunkPos, MAX_CONCURRENT_LOADS, RENDER_DISTANCE},
 };
 
 // The Chunkmap resource stores the chunks that are currently loaded.
@@ -54,11 +55,10 @@ pub fn manage_chunk_loading(
     mut chunk_map: ResMut<ChunkMap>,
     mut chunk_state: ResMut<ChunkLoadState>,
     camera: Query<&Transform, With<FlyCam>>,
-    mut visibility_query: Query<&mut Visibility>,
 )
 {
     // Get player chunk position and camera info.
-    let (player_chunk, cam_pos, cam_forward) = match camera.single()
+    let (player_chunk, _, _) = match camera.single()
     {
         Ok(cam) =>
         {
@@ -68,48 +68,6 @@ pub fn manage_chunk_loading(
             (ChunkPos { x: chunk_x, y: chunk_y }, cam_pos, cam.forward())
         },
         Err(_) => (ChunkPos { x: 0, y: 0 }, Vec3::ZERO, Dir3::Z),
-    };
-
-    // Camera FOV and culling parameters.
-    let fov_cos = (140.0f32.to_radians() / 2.0).cos();
-    let max_dist = (RENDER_DISTANCE as f32 + 0.5) * CHUNK_SIZE as f32;
-
-    let cam_forward_xz = {
-        let mut v = cam_forward.as_vec3();
-        v.y = 0.0;
-        if v.length_squared() > 0.0
-        {
-            v = v.normalize();
-        }
-        v
-    };
-
-    // A helper to determine if a chunk is visible from the camera pov.
-    let is_chunk_visible = |chunk_pos: ChunkPos| {
-        // Always show the chunk under the player and its neighbors in a radius of 2.
-        if (chunk_pos.x - player_chunk.x).abs() <= 3 && (chunk_pos.y - player_chunk.y).abs() <= 5
-        {
-            return true;
-        }
-        let center = Vec3::new(
-            (chunk_pos.x as f32 + 0.5) * CHUNK_SIZE as f32,
-            CHUNK_HEIGHT as f32 / 2.0,
-            (chunk_pos.y as f32 + 0.5) * CHUNK_SIZE as f32,
-        );
-        let to_center = center - cam_pos;
-        let dist = to_center.length();
-        if dist > max_dist
-        {
-            return false;
-        }
-        let mut dir = to_center;
-        dir.y = 0.0;
-        if dir.length_squared() == 0.0
-        {
-            return true;
-        }
-        let dir = dir.normalize();
-        cam_forward_xz.dot(dir) > fov_cos
     };
 
     // The player's chunk's position will be used to determine the chunks that
@@ -137,12 +95,12 @@ pub fn manage_chunk_loading(
         // Closer chunks will be loaded first.
         desired.sort_by(|a, b| {
             let dist_a = sqrt(
-                ((a.x - player_chunk.x) * (a.x - player_chunk.x)
-                    + (a.y - player_chunk.y) * (a.y - player_chunk.y)) as f32,
+                ((a.x - player_chunk.x) * (a.x - player_chunk.x) + (a.y - player_chunk.y) * (a.y - player_chunk.y))
+                    as f32,
             );
             let dist_b = sqrt(
-                ((b.x - player_chunk.x) * (b.x - player_chunk.x)
-                    + (b.y - player_chunk.y) * (b.y - player_chunk.y)) as f32,
+                ((b.x - player_chunk.x) * (b.x - player_chunk.x) + (b.y - player_chunk.y) * (b.y - player_chunk.y))
+                    as f32,
             );
             dist_a
                 .partial_cmp(&dist_b)
@@ -196,21 +154,6 @@ pub fn manage_chunk_loading(
         });
         // Insert the loading task into the state.
         chunk_state.tasks.insert(pos, task);
-    }
-
-    // Update visibility of loaded chunks based on FOV.
-    for (pos, &entity) in chunk_map.loaded_chunks.iter()
-    {
-        if let Ok(mut vis) = visibility_query.get_mut(entity)
-        {
-            let should_be_visible = is_chunk_visible(*pos);
-            let new_vis =
-                if should_be_visible { Visibility::Inherited } else { Visibility::Hidden };
-            if *vis != new_vis
-            {
-                *vis = new_vis;
-            }
-        }
     }
 }
 
@@ -336,12 +279,10 @@ pub fn queue_chunk_meshes(
                 let block_list = block_list.clone();
                 let chunk_pos_copy = pos;
 
-                let neighbor_chunks_data =
-                    get_neighbor_chunk_data(pos, &chunk_map, &all_chunks_query);
+                let neighbor_chunks_data = get_neighbor_chunk_data(pos, &chunk_map, &all_chunks_query);
 
                 let mesh_task = task_pool.spawn(async move {
-                    let (opaque_mesh, transparent_mesh) =
-                        mesh_chunk(&chunk_clone, &block_list, &neighbor_chunks_data);
+                    let (opaque_mesh, transparent_mesh) = mesh_chunk(&chunk_clone, &block_list, &neighbor_chunks_data);
                     (chunk_pos_copy, opaque_mesh, transparent_mesh)
                 });
 
@@ -356,7 +297,7 @@ pub fn process_chunk_mesh_tasks(
     mut commands: Commands,
     mut mesh_state: ResMut<ChunkMeshState>,
     mut meshes: ResMut<Assets<Mesh>>,
-    global_mat: Res<crate::voxel_material::GlobalMaterials>,
+    global_mat: Res<GlobalMaterials>,
     chunk_map: Res<ChunkMap>,
 )
 {
@@ -369,8 +310,7 @@ pub fn process_chunk_mesh_tasks(
     {
         let waker = noop_waker_ref();
         let mut cx = Context::from_waker(waker);
-        if let Poll::Ready((chunk_pos, opaque_mesh, transparent_mesh)) =
-            std::pin::Pin::new(task).poll(&mut cx)
+        if let Poll::Ready((chunk_pos, opaque_mesh, transparent_mesh)) = std::pin::Pin::new(task).poll(&mut cx)
         {
             if let Some(&chunk_entity) = chunk_map.loaded_chunks.get(&chunk_pos)
             {

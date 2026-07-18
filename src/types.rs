@@ -1,5 +1,8 @@
 use std::ops::{Add, Sub};
 
+use serde::{Deserialize, Serialize};
+use serde_repr::{Deserialize_repr, Serialize_repr};
+
 // Chunk size data.
 pub const CHUNK_SIZE: u16 = 16;
 pub const CHUNK_HEIGHT: u16 = 256;
@@ -13,24 +16,24 @@ pub const MAX_CONCURRENT_LOADS: usize = 64;
 
 // Block types are hard-coded but should be loaded from a file later.
 #[repr(u16)]
-#[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
+#[derive(PartialEq, Eq, Hash, Copy, Clone, Debug, Serialize_repr, Deserialize_repr)]
 pub enum BlockType
 {
-    Air,
-    Grass,
-    Dirt,
-    Stone,
-    Sand,
-    Clay,
-    Gravel,
-    OakLog,
-    OakLeaves,
-    Water,
+    Air = 0,
+    Grass = 1,
+    Dirt = 2,
+    Stone = 3,
+    Sand = 4,
+    Clay = 5,
+    Gravel = 6,
+    OakLog = 7,
+    OakLeaves = 8,
+    Water = 9,
 }
 
 // A struct representing the horizontal position of a chunk. It can serve as an
 // ID for a chunk.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub struct ChunkPos
 {
     pub x: i32,
