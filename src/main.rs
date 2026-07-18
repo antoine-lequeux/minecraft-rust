@@ -41,6 +41,7 @@ fn main()
     app.init_resource::<ChunkLoadState>();
     app.init_resource::<ChunkMeshState>();
     app.init_resource::<ChunkMeshQueue>();
+    app.insert_resource(minecraft::ui::StatsTimer { timer: Timer::from_seconds(0.5, TimerMode::Repeating) });
     app.add_systems(Startup, load_block_types.after(setup)); // World systems - only run when in game (not when paused)
     app.add_systems(
         Update,

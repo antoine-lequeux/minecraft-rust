@@ -5,7 +5,7 @@ use bevy::{
 };
 
 use crate::{
-    InGameUI, PendingGameLoad,
+    ChunkMap, InGameUI, PendingGameLoad,
     gamestate::{GameState, MenuStack},
 };
 
@@ -14,33 +14,65 @@ const MAIN_FONT: &str = "fonts/minecraft.otf";
 // Marker struct to help identify the FPS UI component, since there may be many
 // Text components.
 #[derive(Component)]
-pub struct FpsText
+pub struct FpsText;
+
+#[derive(Component)]
+pub struct ChunkText;
+
+#[derive(Component)]
+pub struct BlockText;
+
+#[derive(Resource)]
+pub struct StatsTimer
 {
     pub timer: Timer,
 }
 
-// This systems periodically updates the FPS text in the UI.
+// This systems periodically updates the FPS and chunk stats in the UI.
 pub fn text_update_system(
     diagnostics: Res<DiagnosticsStore>,
-    mut query: Query<(&mut TextSpan, &mut FpsText)>,
+    mut fps_query: Query<&mut TextSpan, With<FpsText>>,
+    mut chunk_query: Query<&mut TextSpan, (With<ChunkText>, Without<FpsText>, Without<BlockText>)>,
+    mut block_query: Query<&mut TextSpan, (With<BlockText>, Without<FpsText>, Without<ChunkText>)>,
+    chunk_map: Res<ChunkMap>,
     time: Res<Time>,
+    mut stats_timer: ResMut<StatsTimer>,
 )
 {
-    for (mut span, mut fps_text) in &mut query
+    if stats_timer.timer.tick(time.delta()).just_finished()
     {
-        // Only update the counter if the timer period has just ended.
-        if fps_text.timer.tick(time.delta()).just_finished()
+        // Update FPS
+        if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS)
         {
-            // Get the FPS diagnostic.
-            if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS)
+            if let Some(value) = fps.smoothed()
             {
-                // Get the smoothed FPS value.
-                if let Some(value) = fps.smoothed()
+                for mut span in &mut fps_query
                 {
-                    // Update the text.
                     **span = format!("{value:.0}");
                 }
             }
+        }
+
+        // Update Chunks and Blocks
+        let chunk_count = chunk_map.loaded_chunks.len();
+        let block_count = chunk_count * 65536;
+        let block_count_string = if block_count < 1_000_000
+        {
+            format!("{} thousand", block_count / 1000)
+        }
+        else
+        {
+            format!("{} million", block_count / 1_000_000)
+        };
+
+        for mut span in &mut chunk_query
+        {
+            **span = format!("{chunk_count}");
+        }
+
+        for mut span in &mut block_query
+        {
+            **span = block_count_string.clone();
         }
     }
 }
@@ -65,8 +97,7 @@ pub fn setup_ui(mut commands: Commands, assets: Res<AssetServer>)
             // Create a TextSpan that will be updated with the FPS value.
             TextSpan::default(),
             TextFont { font: assets.load(MAIN_FONT), font_size: 30.0, ..Default::default() },
-            // Initialize the timer.
-            FpsText { timer: Timer::from_seconds(0.5, TimerMode::Repeating) },
+            FpsText,
         ));
 }
 
@@ -156,18 +187,55 @@ pub fn setup_ingame_ui(mut commands: Commands, assets: Res<AssetServer>)
         Transform::from_translation(Transform::IDENTITY.translation + Vec3::new(0.0, 0.0, 1.0)),
     ));
 
-    // FPS counter.
+    // Stats container
     commands
         .spawn((
             InGameUI,
-            Text::new("FPS: "),
-            TextFont { font: assets.load(MAIN_FONT), font_size: 30.0, ..default() },
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(10.0),
+                left: Val::Px(10.0),
+                flex_direction: FlexDirection::Column,
+                ..default()
+            },
         ))
-        .with_child((
-            TextSpan::default(),
-            TextFont { font: assets.load(MAIN_FONT), font_size: 30.0, ..Default::default() },
-            FpsText { timer: Timer::from_seconds(0.5, TimerMode::Repeating) },
-        ));
+        .with_children(|parent| {
+            // FPS counter
+            parent
+                .spawn((
+                    Text::new("FPS: "),
+                    TextFont { font: assets.load(MAIN_FONT), font_size: 30.0, ..default() },
+                ))
+                .with_child((
+                    TextSpan::default(),
+                    TextFont { font: assets.load(MAIN_FONT), font_size: 30.0, ..Default::default() },
+                    FpsText,
+                ));
+
+            // Chunk counter
+            parent
+                .spawn((
+                    Text::new("Chunks: "),
+                    TextFont { font: assets.load(MAIN_FONT), font_size: 30.0, ..default() },
+                ))
+                .with_child((
+                    TextSpan::default(),
+                    TextFont { font: assets.load(MAIN_FONT), font_size: 30.0, ..Default::default() },
+                    ChunkText,
+                ));
+
+            // Block counter
+            parent
+                .spawn((
+                    Text::new("Blocks: "),
+                    TextFont { font: assets.load(MAIN_FONT), font_size: 30.0, ..default() },
+                ))
+                .with_child((
+                    TextSpan::default(),
+                    TextFont { font: assets.load(MAIN_FONT), font_size: 30.0, ..Default::default() },
+                    BlockText,
+                ));
+        });
 }
 
 pub fn button_system(
